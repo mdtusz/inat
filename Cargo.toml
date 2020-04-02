@@ -11,3 +11,6 @@ cursive = { version = "0.14.0", features = ["toml"] }
 dsp-chain = "0.13.1"
 log = "0.4"
 portaudio = "0.7.0"
+termion = "1.5"
+tui = "0.8.0"
+tui-logger = "0.4.5"
