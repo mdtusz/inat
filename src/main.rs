@@ -22,6 +22,18 @@ enum Message {
     Done,
 }
 
+struct App {
+    graph: Graph<[Output; CHANNELS], DspNode>,
+}
+
+impl App {
+    fn new() -> Self {
+        let mut graph = Graph::new();
+
+        Self { graph }
+    }
+}
+
 fn main() -> Result<(), pa::Error> {
     let stdout = io::stdout().into_raw_mode().unwrap();
     let stdin = io::stdin();
@@ -30,17 +42,18 @@ fn main() -> Result<(), pa::Error> {
 
     log::set_max_level(LevelFilter::Info);
 
-    let mut graph = Graph::new();
+    // let mut graph = Graph::new();
+    let mut app = App::new();
 
-    let master = graph.add_node(DspNode::Gain(1.0));
-    graph.set_master(Some(master));
+    let master = app.graph.add_node(DspNode::Gain(1.0));
+    app.graph.set_master(Some(master));
 
     let mut osc1 = Oscillator::new(Wave::Sine, 440.0, 0.0);
-    let (_, osc1n) = graph.add_input(DspNode::Oscillator(osc1), master);
+    let (_, osc1n) = app.graph.add_input(DspNode::Oscillator(osc1), master);
 
     // Prepare graph for concurrency.
-    let graph = Arc::new(Mutex::new(graph));
-    let audio_graph = Arc::clone(&graph);
+    let app = Arc::new(Mutex::new(app));
+    let audio_app = Arc::clone(&app);
 
     let callback = move |pa::OutputStreamCallbackArgs { buffer, .. }| {
         let buffer: &mut [[Output; CHANNELS]] = buffer.to_frame_slice_mut().unwrap();
@@ -49,9 +62,10 @@ fn main() -> Result<(), pa::Error> {
         dsp::slice::equilibrium(buffer);
 
         // Compute audio from graph.
-        audio_graph
+        audio_app
             .lock()
             .unwrap()
+            .graph
             .audio_requested(buffer, SAMPLE_HZ);
 
         pa::Continue
