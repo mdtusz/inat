@@ -1,9 +1,16 @@
+use std::io;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use dsp::sample::ToFrameSliceMut;
 use dsp::{Graph, Node, NodeIndex};
 use log::{debug, info, trace, warn, LevelFilter};
 use portaudio as pa;
+use termion::event::Key;
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+use tui::backend::TermionBackend;
+use tui::Terminal;
 
 mod engine;
 mod ui;
@@ -16,6 +23,11 @@ enum Message {
 }
 
 fn main() -> Result<(), pa::Error> {
+    let stdout = io::stdout().into_raw_mode().unwrap();
+    let stdin = io::stdin();
+    let backend = TermionBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).unwrap();
+
     log::set_max_level(LevelFilter::Info);
 
     let mut graph = Graph::new();
@@ -51,7 +63,16 @@ fn main() -> Result<(), pa::Error> {
     let mut stream = pa.open_non_blocking_stream(settings, callback)?;
     stream.start()?;
 
-    loop {}
+    loop {
+        let stdin = io::stdin();
+        for c in stdin.keys() {
+            match c.unwrap() {
+                Key::Char('q') => break,
+                _ => (),
+            }
+        }
+        break;
+    }
 
     Ok(())
 }
