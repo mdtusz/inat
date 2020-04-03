@@ -144,10 +144,13 @@ fn main() -> Result<(), pa::Error> {
                     terminal.clear();
                     break;
                 }
-                Key::Char('i') => {
-                    terminal.show_cursor().unwrap();
-                    app.ui.mode = Mode::Insert;
-                }
+                Key::Char('i') => match app.ui.mode {
+                    Mode::Insert => {}
+                    Mode::Normal => {
+                        terminal.show_cursor().unwrap();
+                        app.ui.mode = Mode::Insert;
+                    }
+                },
                 Key::Char('~') => {
                     app.ui.debug = !app.ui.debug;
                 }
@@ -156,7 +159,7 @@ fn main() -> Result<(), pa::Error> {
                     app.ui.mode = Mode::Normal;
                 }
                 _ => {
-                    info!("Key event: {:?}", key);
+                    info!("Unhandled key event: {:?}", key);
                 }
             },
             Err(_) => {}
