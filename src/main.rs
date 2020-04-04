@@ -12,9 +12,11 @@ use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 use tui::backend::{Backend, TermionBackend};
-use tui::layout::{Constraint, Direction, Layout};
-use tui::style::{Color, Style};
-use tui::widgets::{Block, Borders, List, Paragraph, Text, Widget};
+use tui::buffer::Buffer;
+use tui::layout::{Constraint, Direction, Layout, Rect};
+use tui::style::{Color, Modifier, Style};
+use tui::symbols::line::{VERTICAL_LEFT, VERTICAL_RIGHT};
+use tui::widgets::{Block, Borders, List, Paragraph, SelectableList, Text, Widget};
 use tui::Terminal;
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
@@ -171,7 +173,7 @@ fn main() -> Result<(), pa::Error> {
         terminal.draw(|mut f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+                .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
                 .split(f.size());
 
             if ui.debug {
@@ -179,19 +181,40 @@ fn main() -> Result<(), pa::Error> {
                     .block(
                         Block::default()
                             .title("Logs ")
-                            .title_style(Style::default().fg(Color::Blue)),
+                            .title_style(Style::default().fg(Color::Blue))
+                            .borders(Borders::TOP),
                     )
                     .style(Style::default().fg(Color::White).bg(Color::Black))
                     .render(&mut f, chunks[0]);
             } else {
-                Block::default().title("Tracker").render(&mut f, chunks[0]);
+                let main_view = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+                    .split(chunks[0]);
+
+                Tracker::new()
+                    .block(
+                        Block::default()
+                            .title(&make_title("Tracker"))
+                            .borders(Borders::TOP),
+                    )
+                    .render(&mut f, main_view[0]);
+
+                Block::default()
+                    .title(&make_title("Synth"))
+                    .borders(Borders::TOP)
+                    .render(&mut f, main_view[1]);
             }
 
             let mut default = Style::default();
             let (mode, style) = match ui.mode {
                 Mode::Insert => ("insert", default.bg(Color::Green).fg(Color::Black)),
-                Mode::Normal => ("normal", default.bg(Color::Black).fg(Color::White)),
+                Mode::Normal => (
+                    "normal",
+                    default.bg(Color::Rgb(50, 50, 50)).fg(Color::White),
+                ),
             };
+
             Paragraph::new([Text::raw(mode)].iter())
                 .style(style)
                 .render(&mut f, chunks[1]);
@@ -200,4 +223,86 @@ fn main() -> Result<(), pa::Error> {
     }
 
     Ok(())
+}
+
+struct Tracker<'b> {
+    block: Option<Block<'b>>,
+}
+
+impl<'b> Tracker<'b> {
+    fn new() -> Self {
+        Tracker { block: None }
+    }
+
+    fn block(&mut self, block: Block<'b>) -> &mut Self {
+        self.block = Some(block);
+        self
+    }
+}
+
+impl<'b> Widget for Tracker<'b> {
+    fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
+        let block_area = match self.block {
+            Some(ref mut b) => {
+                b.draw(area, buffer);
+                b.inner(area)
+            }
+            None => area,
+        };
+
+        let x = [
+            "C12 ", "---", "---", "---", "C12 ", "---", "---", "---", "C12 ", "---", "---", "---",
+            "C12 ", "---", "---", "---",
+        ];
+
+        let tracker_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Length(4),
+                    Constraint::Length(4),
+                    Constraint::Length(4),
+                    Constraint::Length(4),
+                ]
+                .as_ref(),
+            )
+            .split(block_area);
+
+        SelectableList::default()
+            .items(&x)
+            .style(Style::default().fg(Color::Rgb(94, 255, 238)))
+            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
+            .select(Some(0))
+            .draw(tracker_cols[0], buffer);
+
+        SelectableList::default()
+            .items(&x)
+            .style(Style::default().fg(Color::Rgb(245, 230, 66)))
+            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
+            .select(Some(0))
+            .draw(tracker_cols[1], buffer);
+
+        SelectableList::default()
+            .items(&x)
+            .style(Style::default().fg(Color::Rgb(255, 94, 236)))
+            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
+            .select(Some(0))
+            .draw(tracker_cols[2], buffer);
+
+        SelectableList::default()
+            .items(&x)
+            .style(Style::default().fg(Color::Rgb(94, 190, 250)))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(50, 200, 50))
+                    .modifier(Modifier::BOLD),
+            )
+            .select(Some(0))
+            .draw(tracker_cols[3], buffer);
+    }
+}
+
+fn make_title(s: &str) -> String {
+    format!("{} {} {}", VERTICAL_LEFT, s, VERTICAL_RIGHT)
 }
