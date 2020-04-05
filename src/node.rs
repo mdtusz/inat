@@ -9,7 +9,7 @@ use std::collections::HashMap;
 pub type Frame = Stereo<f32>;
 
 pub struct Graph<N: Node> {
-    graph: DiGraph<N, Connection>,
+    pub graph: DiGraph<N, Connection>,
     root_index: Option<NodeIndex>,
 }
 
@@ -26,9 +26,10 @@ pub trait Node {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ConnectionKind {
     Default,
+    Trigger,
 }
 
-struct Connection {
+pub struct Connection {
     signal: Vec<Frame>,
     kind: ConnectionKind,
 }

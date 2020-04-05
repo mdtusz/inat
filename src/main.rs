@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use log::{debug, info, trace, warn, LevelFilter};
+use petgraph::graph::NodeIndex;
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
@@ -22,12 +23,13 @@ mod engine;
 mod node;
 mod ui;
 
-use crate::engine::{Adsr, DspNode, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
+use crate::engine::{Adsr, DspNode, Gate, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
 use crate::node::{ConnectionKind, Frame as F, Graph};
 
 struct App {
     graph: Graph<DspNode>,
     ui: UiState,
+    trig: NodeIndex,
 }
 
 #[derive(Clone, Debug)]
@@ -61,10 +63,15 @@ impl App {
         let master = graph.add_node(DspNode::Gain(1.0));
         graph.set_root(master);
 
+        let trig = graph.add_node(DspNode::Gate(Gate::default()));
         let osc1 = graph.add_node(DspNode::Oscillator(Oscillator::default()));
-        graph.connect(osc1, master, ConnectionKind::Default);
+        let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
 
-        Self { graph, ui }
+        graph.connect(trig, adsr, ConnectionKind::Trigger);
+        graph.connect(osc1, adsr, ConnectionKind::Default);
+        graph.connect(adsr, master, ConnectionKind::Default);
+
+        Self { graph, ui, trig }
     }
 }
 
@@ -73,7 +80,6 @@ fn main() -> Result<(), pa::Error> {
     tui_logger::set_default_level(LevelFilter::Trace);
 
     let mut app = App::new();
-    let mut adsr = Adsr::default();
 
     // Prepare graph for concurrency.
     let pair = Arc::new((Mutex::new(app), Condvar::new()));
@@ -83,7 +89,7 @@ fn main() -> Result<(), pa::Error> {
     let input_pair = Arc::clone(&pair);
 
     let sequence = [true, false, false, false];
-    let mut tempo: f64 = 120.0;
+    let mut tempo: f64 = 100.0;
     let mut current_frame: usize = 0;
     let mut next_step = (0, 0);
 
@@ -100,6 +106,17 @@ fn main() -> Result<(), pa::Error> {
                 next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
                 next_step.1 = (next_step.1 + 1) % 64;
                 app.ui.step = next_step.1;
+                let t = app.trig;
+                match app.graph.graph.node_weight_mut(t) {
+                    Some(n) => match n {
+                        DspNode::Gate(g) => {
+                            g.open(current_frame);
+                            g.close(current_frame + 1000);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                };
                 info!("schedule step here! {}", next_step.1);
             }
             current_frame += 1;
