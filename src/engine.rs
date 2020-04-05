@@ -1,11 +1,9 @@
 use std::f64::consts::PI;
 
-use dsp::sample::ToFrameSliceMut;
-use dsp::signal::{ConstHz, Saw, Signal, Sine, Square};
-use dsp::{Frame, FromSample, Graph, Node, Sample, Walker};
+use dsp::{Frame, FromSample, Node, Sample};
 
 pub const CHANNELS: usize = 2;
-pub const FRAMES: u32 = 512;
+pub const FRAMES: u32 = 128;
 pub const SAMPLE_HZ: f64 = 44_100.0;
 
 pub type Frequency = f64;
@@ -13,6 +11,7 @@ pub type Phase = f64;
 pub type Gain = f32;
 pub type Output = f32;
 
+#[derive(Debug)]
 pub enum DspNode {
     Gain(Gain),
     Oscillator(Oscillator),
@@ -30,7 +29,7 @@ pub enum Wave {
 }
 
 /// Basic oscillator for generating wave signals.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Oscillator {
     frequency: Frequency,
     phase: Phase,
@@ -41,7 +40,6 @@ impl Oscillator {
     /// Creates a new oscillator.
     pub fn new(wave: Wave, frequency: Frequency, phase: Phase) -> Self {
         let signal = dsp::signal::rate(SAMPLE_HZ).const_hz(frequency);
-        let square = signal.clone().square();
 
         Self {
             frequency,

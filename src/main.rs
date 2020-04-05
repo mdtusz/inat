@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use dsp::sample::ToFrameSliceMut;
-use dsp::{Graph, Node, NodeIndex};
+use dsp::{Graph, Node};
 use log::{debug, info, trace, warn, LevelFilter};
 use portaudio as pa;
 use termion::event::Key;
@@ -16,14 +16,14 @@ use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::symbols::line::{VERTICAL_LEFT, VERTICAL_RIGHT};
-use tui::widgets::{Block, Borders, List, Paragraph, SelectableList, Text, Widget};
+use tui::widgets::{Block, Borders, List, Paragraph, SelectableList, Table, Text, Widget};
 use tui::Terminal;
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
 mod engine;
 mod ui;
 
-use engine::{DspNode, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
+use engine::{Adsr, DspNode, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
 
 struct App {
     graph: Graph<[Output; CHANNELS], DspNode>,
@@ -34,6 +34,7 @@ struct App {
 struct UiState {
     debug: bool,
     mode: Mode,
+    step: usize,
 }
 
 impl UiState {
@@ -41,6 +42,7 @@ impl UiState {
         Self {
             debug: false,
             mode: Mode::Normal,
+            step: 0,
         }
     }
 }
@@ -72,11 +74,8 @@ fn main() -> Result<(), pa::Error> {
     tui_logger::init_logger(LevelFilter::Info).unwrap();
     tui_logger::set_default_level(LevelFilter::Trace);
 
-    // let mut graph = Graph::new();
     let mut app = App::new();
-
-    // let mut osc1 = Oscillator::new(Wave::Sine, 440.0, 0.0);
-    // let (_, osc1n) = app.graph.add_input(DspNode::Oscillator(osc1), master);
+    let mut adsr = Adsr::default();
 
     // Prepare graph for concurrency.
     let pair = Arc::new((Mutex::new(app), Condvar::new()));
@@ -85,14 +84,28 @@ fn main() -> Result<(), pa::Error> {
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
-    let callback = move |pa::OutputStreamCallbackArgs { buffer, .. }| {
-        let buffer: &mut [[Output; CHANNELS]] = buffer.to_frame_slice_mut().unwrap();
+    let sequence = [true, false, false, false];
+    let mut tempo: f64 = 120.0;
+    let mut current_frame: usize = 0;
+    let mut next_step = (0, 0);
 
-        // Insert silence to start.
-        dsp::slice::equilibrium(buffer);
+    let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
+        let buffer: &mut [[Output; CHANNELS]] = buffer.to_frame_slice_mut().unwrap();
 
         let (app, trigger) = &*audio_pair;
         let mut app = app.lock().unwrap();
+
+        let initial_frame = current_frame;
+        let next_cycle = current_frame + frames;
+        while current_frame < next_cycle {
+            if current_frame == next_step.0 {
+                next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
+                next_step.1 = (next_step.1 + 1) % 64;
+                app.ui.step = next_step.1;
+                info!("schedule step here! {}", next_step.1);
+            }
+            current_frame += 1;
+        }
 
         // Compute audio from graph.
         app.graph.audio_requested(buffer, SAMPLE_HZ);
@@ -135,10 +148,12 @@ fn main() -> Result<(), pa::Error> {
         let (app, trigger) = &*ui_pair;
         let mut app = app.lock().unwrap();
         let result = trigger
-            .wait_timeout(app, Duration::from_millis(16))
+            // .wait(app)
+            .wait_timeout(app, Duration::from_millis(32))
             .unwrap();
 
         app = result.0;
+        // app = result;
 
         match rx.try_recv() {
             Ok(key) => match key {
@@ -198,17 +213,22 @@ fn main() -> Result<(), pa::Error> {
                             .title(&make_title("Tracker"))
                             .borders(Borders::TOP),
                     )
+                    .active(ui.step)
                     .render(&mut f, main_view[0]);
 
-                Block::default()
-                    .title(&make_title("Synth"))
-                    .borders(Borders::TOP)
+                Source::new()
+                    .block(
+                        Block::default()
+                            .title(&make_title("Source"))
+                            .borders(Borders::TOP),
+                    )
                     .render(&mut f, main_view[1]);
             }
 
+            // Command line.
             let mut default = Style::default();
             let (mode, style) = match ui.mode {
-                Mode::Insert => ("insert", default.bg(Color::Green).fg(Color::Black)),
+                Mode::Insert => ("insert", default.bg(Color::Rgb(0, 100, 0)).fg(Color::Black)),
                 Mode::Normal => (
                     "normal",
                     default.bg(Color::Rgb(50, 50, 50)).fg(Color::White),
@@ -225,17 +245,55 @@ fn main() -> Result<(), pa::Error> {
     Ok(())
 }
 
-struct Tracker<'b> {
+struct Source<'b> {
     block: Option<Block<'b>>,
 }
 
-impl<'b> Tracker<'b> {
+impl<'b> Source<'b> {
     fn new() -> Self {
-        Tracker { block: None }
+        Source { block: None }
     }
 
     fn block(&mut self, block: Block<'b>) -> &mut Self {
         self.block = Some(block);
+        self
+    }
+}
+
+impl<'b> Widget for Source<'b> {
+    fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
+        let block_area = match self.block {
+            Some(ref mut b) => {
+                b.draw(area, buffer);
+                b.inner(area)
+            }
+            None => area,
+        };
+    }
+}
+
+struct Tracker<'b> {
+    block: Option<Block<'b>>,
+    steps: [Step; 64],
+    active: usize,
+}
+
+impl<'b> Tracker<'b> {
+    fn new() -> Self {
+        Tracker {
+            block: None,
+            steps: [Step::empty(); 64],
+            active: 0,
+        }
+    }
+
+    fn block(&mut self, block: Block<'b>) -> &mut Self {
+        self.block = Some(block);
+        self
+    }
+
+    fn active(&mut self, active: usize) -> &mut Self {
+        self.active = active;
         self
     }
 }
@@ -250,11 +308,6 @@ impl<'b> Widget for Tracker<'b> {
             None => area,
         };
 
-        let x = [
-            "C12 ", "---", "---", "---", "C12 ", "---", "---", "---", "C12 ", "---", "---", "---",
-            "C12 ", "---", "---", "---",
-        ];
-
         let tracker_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(
@@ -268,38 +321,54 @@ impl<'b> Widget for Tracker<'b> {
             )
             .split(block_area);
 
+        let notes = self
+            .steps
+            .iter()
+            .map(|step| {
+                step.note
+                    .map(|n| n.to_string())
+                    .unwrap_or("---".to_string())
+            })
+            .collect::<Vec<String>>();
+
         SelectableList::default()
-            .items(&x)
+            .items(&notes)
             .style(Style::default().fg(Color::Rgb(94, 255, 238)))
             .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-            .select(Some(0))
+            .select(Some(self.active))
             .draw(tracker_cols[0], buffer);
 
+        let instruments = self
+            .steps
+            .iter()
+            .map(|step| {
+                step.instrument
+                    .map(|n| n.to_string())
+                    .unwrap_or("---".to_string())
+            })
+            .collect::<Vec<String>>();
+
         SelectableList::default()
-            .items(&x)
+            .items(&instruments)
             .style(Style::default().fg(Color::Rgb(245, 230, 66)))
             .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-            .select(Some(0))
+            .select(Some(self.active))
             .draw(tracker_cols[1], buffer);
+    }
+}
 
-        SelectableList::default()
-            .items(&x)
-            .style(Style::default().fg(Color::Rgb(255, 94, 236)))
-            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-            .select(Some(0))
-            .draw(tracker_cols[2], buffer);
+#[derive(Clone, Copy)]
+struct Step {
+    instrument: Option<u8>,
+    note: Option<u8>,
+}
 
-        SelectableList::default()
-            .items(&x)
-            .style(Style::default().fg(Color::Rgb(94, 190, 250)))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(50, 200, 50))
-                    .modifier(Modifier::BOLD),
-            )
-            .select(Some(0))
-            .draw(tracker_cols[3], buffer);
+impl Step {
+    fn empty() -> Self {
+        Self {
+            instrument: None,
+            note: None,
+        }
     }
 }
 
