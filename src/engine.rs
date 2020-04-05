@@ -1,6 +1,12 @@
+use log::info;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use dsp::{Frame, FromSample, Node, Sample};
+use sample::conv::FromSample;
+use sample::frame::Frame as F;
+use sample::Sample;
+
+use crate::node::{ConnectionKind, Frame, Node};
 
 pub const CHANNELS: usize = 2;
 pub const FRAMES: u32 = 128;
@@ -20,7 +26,6 @@ pub enum DspNode {
 /// Primitive wave types.
 #[derive(Clone, Copy, Debug)]
 pub enum Wave {
-    Silence,
     Sine,
     Square,
     Saw,
@@ -39,8 +44,6 @@ pub struct Oscillator {
 impl Oscillator {
     /// Creates a new oscillator.
     pub fn new(wave: Wave, frequency: Frequency, phase: Phase) -> Self {
-        let signal = dsp::signal::rate(SAMPLE_HZ).const_hz(frequency);
-
         Self {
             frequency,
             phase,
@@ -56,55 +59,103 @@ impl Default for Oscillator {
     }
 }
 
-impl Node<[Output; CHANNELS]> for Oscillator {
-    fn audio_requested(&mut self, buffer: &mut [[Output; CHANNELS]], sample_hz: f64) {
+#[derive(Clone, Debug)]
+pub struct Adsr {
+    attack: u32,
+    decay: u32,
+    sustain: Gain,
+    release: u32,
+    current_frame: usize,
+}
+
+impl Default for Adsr {
+    fn default() -> Self {
+        Self {
+            attack: 128,
+            decay: 256,
+            sustain: 1.0,
+            release: 128,
+            current_frame: 0,
+        }
+    }
+}
+
+impl Node for Oscillator {
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame> {
+        let mut buffer = vec![F::equilibrium(); frames as usize];
+        let sr = sample_rate;
         match self.wave {
-            Wave::Silence => dsp::slice::equilibrium(buffer),
             Wave::Sine => {
-                dsp::slice::map_in_place(buffer, |_| {
+                sample::slice::map_in_place(&mut buffer, |_| {
                     let val = sine(self.phase);
-                    self.phase += self.frequency / sample_hz;
-                    Frame::from_fn(|_| val)
+                    self.phase += self.frequency / sr;
+                    F::from_fn(|_| val)
                 });
+                buffer.to_vec()
             }
             Wave::Triangle => {
-                dsp::slice::map_in_place(buffer, |_| {
+                sample::slice::map_in_place(&mut buffer, |_| {
                     let val = triangle(self.phase);
-                    self.phase += self.frequency / sample_hz;
-                    Frame::from_fn(|_| val)
+                    self.phase += self.frequency / sr;
+                    F::from_fn(|_| val)
                 });
+                buffer.to_vec()
             }
             Wave::Square => {
-                dsp::slice::map_in_place(buffer, |_| {
+                sample::slice::map_in_place(&mut buffer, |_| {
                     let val = square(self.phase);
-                    self.phase = (self.phase + self.frequency / sample_hz) % 1.0;
-                    Frame::from_fn(|_| val)
+                    self.phase = (self.phase + self.frequency / sr) % 1.0;
+                    F::from_fn(|_| val)
                 });
+                buffer.to_vec()
             }
             Wave::Saw => {
-                dsp::slice::map_in_place(buffer, |_| {
+                sample::slice::map_in_place(&mut buffer, |_| {
                     let val = saw(self.phase);
-                    self.phase = (self.phase + self.frequency / sample_hz) % 1.0;
-                    Frame::from_fn(|_| val)
+                    self.phase = (self.phase + self.frequency / sr) % 1.0;
+                    F::from_fn(|_| val)
                 });
+                buffer.to_vec()
             }
             Wave::Ramp => {
-                dsp::slice::map_in_place(buffer, |_| {
+                sample::slice::map_in_place(&mut buffer, |_| {
                     let val = ramp(self.phase);
-                    self.phase = (self.phase + self.frequency / sample_hz) % 1.0;
-                    Frame::from_fn(|_| val)
+                    self.phase = (self.phase + self.frequency / sr) % 1.0;
+                    F::from_fn(|_| val)
                 });
+                buffer.to_vec()
             }
         }
     }
 }
 
-impl Node<[Output; CHANNELS]> for DspNode {
-    fn audio_requested(&mut self, buffer: &mut [[Output; CHANNELS]], sample_hz: f64) {
+impl Node for DspNode {
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame> {
         match self {
-            DspNode::Oscillator(osc) => osc.audio_requested(buffer, sample_hz),
+            DspNode::Oscillator(osc) => {
+                osc.compute_signal(inputs, sample_rate, start_frame, frames)
+            }
             DspNode::Gain(value) => {
-                dsp::slice::map_in_place(buffer, |frame| frame.map(|sample| sample.mul_amp(*value)))
+                if let Some(input) = inputs.get(&ConnectionKind::Default) {
+                    input
+                        .iter()
+                        .map(|frame| frame.map(|sample| sample.mul_amp(*value)))
+                        .collect()
+                } else {
+                    vec![Frame::equilibrium(); frames as usize]
+                }
             }
         }
     }

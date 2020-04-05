@@ -1,17 +1,15 @@
 use std::io;
-use std::io::Write;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dsp::sample::ToFrameSliceMut;
-use dsp::{Graph, Node};
 use log::{debug, info, trace, warn, LevelFilter};
 use portaudio as pa;
+use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
-use tui::backend::{Backend, TermionBackend};
+use tui::backend::TermionBackend;
 use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
@@ -21,12 +19,14 @@ use tui::Terminal;
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
 mod engine;
+mod node;
 mod ui;
 
-use engine::{Adsr, DspNode, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
+use crate::engine::{Adsr, DspNode, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
+use crate::node::{ConnectionKind, Frame as F, Graph};
 
 struct App {
-    graph: Graph<[Output; CHANNELS], DspNode>,
+    graph: Graph<DspNode>,
     ui: UiState,
 }
 
@@ -59,14 +59,12 @@ impl App {
         let ui = UiState::new();
 
         let master = graph.add_node(DspNode::Gain(1.0));
-        graph.set_master(Some(master));
+        graph.set_root(master);
+
+        let osc1 = graph.add_node(DspNode::Oscillator(Oscillator::default()));
+        graph.connect(osc1, master, ConnectionKind::Default);
 
         Self { graph, ui }
-    }
-
-    fn master(&self) -> &DspNode {
-        let master_index = self.graph.master_index().expect("No master gain!");
-        self.graph.node(master_index).unwrap()
     }
 }
 
@@ -90,7 +88,7 @@ fn main() -> Result<(), pa::Error> {
     let mut next_step = (0, 0);
 
     let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
-        let buffer: &mut [[Output; CHANNELS]] = buffer.to_frame_slice_mut().unwrap();
+        let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
 
         let (app, trigger) = &*audio_pair;
         let mut app = app.lock().unwrap();
@@ -108,7 +106,9 @@ fn main() -> Result<(), pa::Error> {
         }
 
         // Compute audio from graph.
-        app.graph.audio_requested(buffer, SAMPLE_HZ);
+        let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frames);
+
+        sample::slice::write(buffer, &frames);
 
         pa::Continue
     };
