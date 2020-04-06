@@ -154,10 +154,11 @@ pub enum DspNode {
 /// Primitive wave types.
 #[derive(Clone, Copy, Debug)]
 pub enum Wave {
+    Noise,
+    Ramp,
     Sine,
     Square,
     Saw,
-    Ramp,
     Triangle,
 }
 
@@ -234,6 +235,15 @@ impl Node for Oscillator {
                 sample::slice::map_in_place(&mut buffer, |_| {
                     let val = ramp(self.phase);
                     self.phase = (self.phase + self.frequency / sr) % 1.0;
+                    F::from_fn(|_| val)
+                });
+                buffer.to_vec()
+            }
+            Wave::Noise => {
+                let mut current_frame = start_frame;
+                sample::slice::map_in_place(&mut buffer, |_| {
+                    let val = noise(current_frame);
+                    current_frame += 1;
                     F::from_fn(|_| val)
                 });
                 buffer.to_vec()
@@ -476,4 +486,25 @@ where
     } else {
         1.0.to_sample::<S>()
     }
+}
+
+fn noise<S: Sample>(seed: usize) -> S
+where
+    S: Sample + FromSample<f32>,
+{
+    const PRIME_1: usize = 15_731;
+    const PRIME_2: usize = 789_221;
+    const PRIME_3: usize = 1_376_312_589;
+    let x = (seed << 13) ^ seed;
+    let noise = 1.0
+        - (x.wrapping_mul(
+            x.wrapping_mul(x)
+                .wrapping_mul(PRIME_1)
+                .wrapping_add(PRIME_2),
+        )
+        .wrapping_add(PRIME_3)
+            & 0x7fffffff) as f32
+            / 1_073_741_824.0;
+
+    noise.to_sample::<S>()
 }

@@ -23,8 +23,8 @@ mod engine;
 mod ui;
 
 use crate::engine::{
-    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, CHANNELS, FRAMES,
-    SAMPLE_HZ,
+    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, Wave, CHANNELS,
+    FRAMES, SAMPLE_HZ,
 };
 
 struct App {
