@@ -38,6 +38,7 @@ struct UiState {
     debug: bool,
     mode: Mode,
     step: usize,
+    input: String,
 }
 
 impl UiState {
@@ -46,14 +47,16 @@ impl UiState {
             debug: false,
             mode: Mode::Normal,
             step: 0,
+            input: String::new(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 enum Mode {
-    Normal,
+    Command,
     Insert,
+    Normal,
 }
 
 impl App {
@@ -89,7 +92,6 @@ fn main() -> Result<(), pa::Error> {
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
-    let sequence = [true, false, false, false];
     let mut tempo: f64 = 100.0;
     let mut current_frame: usize = 0;
     let mut next_step = (0, 0);
@@ -173,33 +175,69 @@ fn main() -> Result<(), pa::Error> {
         // app = result;
 
         match rx.try_recv() {
-            Ok(key) => match key {
-                Key::Char('q') => {
-                    terminal.clear();
-                    break;
-                }
-                Key::Char('i') => match app.ui.mode {
-                    Mode::Insert => {}
-                    Mode::Normal => {
+            Ok(key) => match app.ui.mode {
+                Mode::Command => match key {
+                    Key::Esc => {
+                        terminal.hide_cursor().unwrap();
+                        app.ui.input = String::new();
+                        app.ui.mode = Mode::Normal;
+                    }
+                    Key::Char('\n') => {
+                        if app.ui.input == "q" {
+                            terminal.clear();
+                            break;
+                        }
+
+                        terminal.hide_cursor().unwrap();
+                        app.ui.input = String::new();
+                        app.ui.mode = Mode::Normal;
+                    }
+                    Key::Char(c) => {
+                        app.ui.input = format!("{}{}", app.ui.input, c);
+                    }
+                    Key::Backspace => {
+                        app.ui.input.pop();
+                    }
+                    Key::Ctrl('u') => {
+                        app.ui.input = String::new();
+                    }
+                    _ => {
+                        info!("Unhandled key event: {:?}", key);
+                    }
+                },
+                Mode::Insert => match key {
+                    Key::Esc => {
+                        terminal.hide_cursor().unwrap();
+                        app.ui.input = String::new();
+                        app.ui.mode = Mode::Normal;
+                    }
+                    _ => {
+                        info!("Unhandled key event: {:?}", key);
+                    }
+                },
+                Mode::Normal => match key {
+                    Key::Char('i') => {
                         terminal.show_cursor().unwrap();
                         app.ui.mode = Mode::Insert;
                     }
+                    Key::Char('~') => {
+                        app.ui.debug = !app.ui.debug;
+                    }
+                    Key::Char(':') => {
+                        terminal.show_cursor().unwrap();
+                        app.ui.mode = Mode::Command;
+                    }
+                    _ => {
+                        info!("Unhandled key event: {:?}", key);
+                    }
                 },
-                Key::Char('~') => {
-                    app.ui.debug = !app.ui.debug;
-                }
-                Key::Esc => {
-                    terminal.hide_cursor().unwrap();
-                    app.ui.mode = Mode::Normal;
-                }
-                _ => {
-                    info!("Unhandled key event: {:?}", key);
-                }
             },
             Err(_) => {}
         };
 
         let ui = app.ui.clone();
+
+        // Drop the app reference so the audio thread can acquire a lock more quickly.
         drop(app);
 
         terminal.draw(|mut f| {
@@ -243,11 +281,18 @@ fn main() -> Result<(), pa::Error> {
             }
 
             // Command line.
-            let mut default = Style::default();
+            let default = Style::default();
             let (mode, style) = match ui.mode {
-                Mode::Insert => ("insert", default.bg(Color::Rgb(0, 100, 0)).fg(Color::Black)),
+                Mode::Command => {
+                    let text = format!(":{}", ui.input);
+                    (text, default.bg(Color::Rgb(50, 50, 100)).fg(Color::White))
+                }
+                Mode::Insert => (
+                    "insert".to_string(),
+                    default.bg(Color::Rgb(0, 100, 0)).fg(Color::Black),
+                ),
                 Mode::Normal => (
-                    "normal",
+                    "normal".to_string(),
                     default.bg(Color::Rgb(50, 50, 50)).fg(Color::White),
                 ),
             };
