@@ -110,8 +110,7 @@ fn main() -> Result<(), pa::Error> {
                 match app.graph.graph.node_weight_mut(t) {
                     Some(n) => match n {
                         DspNode::Gate(g) => {
-                            g.open(current_frame);
-                            g.close(current_frame + 1000);
+                            g.trigger(current_frame);
                         }
                         _ => {}
                     },

@@ -9,7 +9,7 @@ use sample::Sample;
 use crate::node::{ConnectionKind, Frame, Node};
 
 pub const CHANNELS: usize = 2;
-pub const FRAMES: u32 = 512;
+pub const FRAMES: u32 = 256;
 pub const SAMPLE_HZ: f64 = 44_100.0;
 
 pub type Frequency = f64;
@@ -144,8 +144,8 @@ pub struct Adsr {
 impl Default for Adsr {
     fn default() -> Self {
         Self {
-            attack: 128,
-            decay: 256,
+            attack: 0,
+            decay: 0,
             sustain: 1.0,
             release: 0,
             current_frame: 0,
@@ -226,6 +226,11 @@ impl Gate {
 
     pub fn close(&mut self, frame: usize) {
         self.close_queue.push_back(frame);
+    }
+
+    pub fn trigger(&mut self, frame: usize) {
+        self.open(frame);
+        self.close(frame + 4000);
     }
 
     fn check_open(&mut self, frame: &usize) {
