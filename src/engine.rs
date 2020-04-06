@@ -2,11 +2,13 @@ use log::info;
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
 
-use sample::conv::FromSample;
-use sample::frame::Frame as F;
-use sample::Sample;
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::Topo;
+use petgraph::Direction;
 
-use crate::node::{ConnectionKind, Frame, Node};
+use sample::conv::FromSample;
+use sample::frame::{Frame as F, Stereo};
+use sample::Sample;
 
 pub const CHANNELS: usize = 2;
 pub const FRAMES: u32 = 256;
@@ -16,6 +18,130 @@ pub type Frequency = f64;
 pub type Phase = f64;
 pub type Gain = f32;
 pub type Output = f32;
+pub type Frame = Stereo<f32>;
+
+/// General graph struct for storing and processing nodes within the DSP chain.
+///
+/// The graph consists of nodes implementing `Node`, accepting multiple input
+/// connections and producing one output connection.
+pub struct Graph<N: Node> {
+    /// The root directed graph tree.
+    ///
+    /// TODO: This should not be public.
+    pub graph: DiGraph<N, Connection>,
+
+    /// The graph root index where final audio will be sourced from.
+    /// This should be a master gain node.
+    root_index: Option<NodeIndex>,
+}
+
+pub trait Node {
+    /// Compute the node signal for a given frame buffer.
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame>;
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ConnectionKind {
+    /// Default connection type.
+    Default,
+
+    /// A trigger connection type.
+    Trigger,
+}
+
+/// The edge type linking graph nodes together.
+pub struct Connection {
+    /// The signal produced from upstream of this connection edge.
+    signal: Vec<Frame>,
+
+    /// The type of connection this edge makes with it's downstream neighbor.
+    kind: ConnectionKind,
+}
+
+impl Connection {
+    /// Creates a new connection of the specified kind.
+    fn new(kind: ConnectionKind) -> Self {
+        Self {
+            signal: Vec::new(),
+            kind: kind,
+        }
+    }
+}
+
+impl Default for Connection {
+    fn default() -> Self {
+        Self::new(ConnectionKind::Default)
+    }
+}
+
+impl<N: Node> Graph<N> {
+    pub fn new() -> Self {
+        let graph = DiGraph::default();
+
+        Self {
+            graph,
+            root_index: None,
+        }
+    }
+
+    /// Sets the root index where all audio should be sourced from.
+    pub fn set_root(&mut self, root: NodeIndex) {
+        self.root_index = Some(root);
+    }
+
+    /// Adds a new node to the graph and returns it's index.
+    pub fn add_node(&mut self, node: N) -> NodeIndex {
+        self.graph.add_node(node)
+    }
+
+    /// Connects a source and destination together.
+    pub fn connect(&mut self, src: NodeIndex, dest: NodeIndex, kind: ConnectionKind) {
+        let conn = Connection::new(kind);
+        self.graph.add_edge(src, dest, conn);
+    }
+
+    /// Computes the final audio from the root node.
+    pub fn compute(&mut self, sample_rate: f64, start_frame: usize, frames: usize) -> Vec<Frame> {
+        let mut traversal = Topo::new(&self.graph);
+
+        while let Some(node_idx) = traversal.next(&self.graph) {
+            let mut incoming_edges = self
+                .graph
+                .neighbors_directed(node_idx, Direction::Incoming)
+                .detach();
+
+            let mut inputs = HashMap::new();
+            while let Some(edge_idx) = incoming_edges.next_edge(&self.graph) {
+                let connection = &self.graph[edge_idx];
+                inputs.insert(connection.kind.clone(), connection.signal.to_vec());
+            }
+
+            let node = &mut self.graph[node_idx];
+            let node_signal = node.compute_signal(inputs, sample_rate, start_frame, frames);
+
+            if node_idx == self.root_index.expect("No root node set!") {
+                return node_signal;
+            }
+
+            let mut outgoing_edges = self
+                .graph
+                .neighbors_directed(node_idx, Direction::Outgoing)
+                .detach();
+
+            while let Some(edge_idx) = outgoing_edges.next_edge(&self.graph) {
+                self.graph[edge_idx].signal = node_signal.clone();
+            }
+        }
+
+        unreachable!("Error processing audio. No root node found!");
+    }
+}
 
 #[derive(Debug)]
 pub enum DspNode {
@@ -180,7 +306,6 @@ impl Node for Adsr {
                             self.open_frame = self.current_frame;
                             self.close_frame = usize::max_value();
                         } else {
-                            info!("Closed!");
                             self.close_frame = self.current_frame + self.release as usize;
                         }
 

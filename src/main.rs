@@ -20,11 +20,12 @@ use tui::Terminal;
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
 mod engine;
-mod node;
 mod ui;
 
-use crate::engine::{Adsr, DspNode, Gate, Oscillator, Output, Wave, CHANNELS, FRAMES, SAMPLE_HZ};
-use crate::node::{ConnectionKind, Frame as F, Graph};
+use crate::engine::{
+    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, CHANNELS, FRAMES,
+    SAMPLE_HZ,
+};
 
 struct App {
     graph: Graph<DspNode>,
