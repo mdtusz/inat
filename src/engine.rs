@@ -318,7 +318,7 @@ impl Node for Adsr {
                             self.open_frame = self.current_frame;
                             self.close_frame = usize::max_value();
                         } else if gate == &0.0 && self.close_frame == usize::max_value() {
-                            self.close_frame = self.current_frame + self.release as usize;
+                            self.close_frame = self.current_frame;
                         }
 
                         let mut frame = Frame::equilibrium();

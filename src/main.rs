@@ -27,10 +27,23 @@ use crate::engine::{
     FRAMES, SAMPLE_HZ,
 };
 
+struct Transport {
+    pub playing: bool,
+}
+
+impl Transport {
+    fn new() -> Self {
+        Self { playing: false }
+    }
+    fn play_pause(&mut self) {
+        self.playing = !self.playing;
+    }
+}
 struct App {
     graph: Graph<DspNode>,
     ui: UiState,
     trig: NodeIndex,
+    transport: Transport,
 }
 
 #[derive(Clone, Debug)]
@@ -75,7 +88,14 @@ impl App {
         graph.connect(osc, adsr, ConnectionKind::Default);
         graph.connect(adsr, master, ConnectionKind::Default);
 
-        Self { graph, ui, trig }
+        let transport = Transport::new();
+
+        Self {
+            graph,
+            ui,
+            transport,
+            trig,
+        }
     }
 }
 
@@ -106,33 +126,37 @@ fn main() -> Result<(), pa::Error> {
 
         let initial_frame = current_frame;
         let next_cycle = current_frame + frames;
+
         while current_frame < next_cycle {
-            if current_frame == next_step.0 {
-                // The 4.0 here is the beats-per-bar.
-                next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
-                next_step.1 = (next_step.1 + 1) % 64;
-                app.ui.step = next_step.1;
+            if app.transport.playing {
+                if current_frame == next_step.0 {
+                    // The 4.0 here is the beats-per-bar.
+                    next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
+                    next_step.1 = (next_step.1 + 1) % 64;
+                    app.ui.step = next_step.1;
 
-                // How to schedule? This is a bit of a struggle because we need to be able to
-                // struggle per-node. I'm unsure what's the best way to achieve this per-node
-                // though - we could pass a tuple of (frame, Change) or something, but that seems
-                // exceedingly difficult because of the strict constraints on rust.
+                    // How to schedule? This is a bit of a struggle because we need to be able to
+                    // struggle per-node. I'm unsure what's the best way to achieve this per-node
+                    // though - we could pass a tuple of (frame, Change) or something, but that seems
+                    // exceedingly difficult because of the strict constraints on rust.
 
-                info!("schedule step here! {}", next_step.1);
-                let t = app.trig;
+                    info!("schedule step here! {}", next_step.1);
+                    let t = app.trig;
 
-                if next_step.1 % 4 == 0 {
-                    match app.graph.graph.node_weight_mut(t) {
-                        Some(n) => match n {
-                            DspNode::Gate(g) => {
-                                g.trigger(current_frame);
-                            }
+                    if next_step.1 % 4 == 0 {
+                        match app.graph.graph.node_weight_mut(t) {
+                            Some(n) => match n {
+                                DspNode::Gate(g) => {
+                                    g.trigger(current_frame);
+                                }
+                                _ => {}
+                            },
                             _ => {}
-                        },
-                        _ => {}
-                    };
+                        };
+                    }
                 }
             }
+
             current_frame += 1;
         }
 
@@ -228,6 +252,9 @@ fn main() -> Result<(), pa::Error> {
                     }
                 },
                 Mode::Normal => match key {
+                    Key::Char(' ') => {
+                        app.transport.play_pause();
+                    }
                     Key::Char('i') => {
                         terminal.show_cursor().unwrap();
                         app.ui.mode = Mode::Insert;
