@@ -68,11 +68,11 @@ impl App {
         graph.set_root(master);
 
         let trig = graph.add_node(DspNode::Gate(Gate::default()));
-        let osc1 = graph.add_node(DspNode::Oscillator(Oscillator::default()));
+        let osc = graph.add_node(DspNode::Oscillator(Oscillator::default()));
         let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
 
         graph.connect(trig, adsr, ConnectionKind::Trigger);
-        graph.connect(osc1, adsr, ConnectionKind::Default);
+        graph.connect(osc, adsr, ConnectionKind::Default);
         graph.connect(adsr, master, ConnectionKind::Default);
 
         Self { graph, ui, trig }
@@ -94,6 +94,8 @@ fn main() -> Result<(), pa::Error> {
 
     let mut tempo: f64 = 100.0;
     let mut current_frame: usize = 0;
+
+    // (frame, step) tuple.
     let mut next_step = (0, 0);
 
     let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
@@ -106,20 +108,30 @@ fn main() -> Result<(), pa::Error> {
         let next_cycle = current_frame + frames;
         while current_frame < next_cycle {
             if current_frame == next_step.0 {
+                // The 4.0 here is the beats-per-bar.
                 next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
                 next_step.1 = (next_step.1 + 1) % 64;
                 app.ui.step = next_step.1;
-                let t = app.trig;
-                match app.graph.graph.node_weight_mut(t) {
-                    Some(n) => match n {
-                        DspNode::Gate(g) => {
-                            g.trigger(current_frame);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                };
+
+                // How to schedule? This is a bit of a struggle because we need to be able to
+                // struggle per-node. I'm unsure what's the best way to achieve this per-node
+                // though - we could pass a tuple of (frame, Change) or something, but that seems
+                // exceedingly difficult because of the strict constraints on rust.
+
                 info!("schedule step here! {}", next_step.1);
+                let t = app.trig;
+
+                if next_step.1 % 4 == 0 {
+                    match app.graph.graph.node_weight_mut(t) {
+                        Some(n) => match n {
+                            DspNode::Gate(g) => {
+                                g.trigger(current_frame);
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    };
+                }
             }
             current_frame += 1;
         }

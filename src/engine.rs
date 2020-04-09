@@ -165,7 +165,7 @@ pub enum Wave {
 /// Basic oscillator for generating wave signals.
 #[derive(Clone, Debug)]
 pub struct Oscillator {
-    frequency: Frequency,
+    pub frequency: Frequency,
     phase: Phase,
     pub wave: Wave,
 }
@@ -260,13 +260,13 @@ impl Node for Oscillator {
 #[derive(Clone, Debug)]
 pub struct Adsr {
     /// Attack time in samples.
-    attack: u32,
+    attack: usize,
     /// Decay time in samples.
-    decay: u32,
+    decay: usize,
     /// Sustain gain level.
     sustain: Gain,
     /// Release time in samples.
-    release: u32,
+    release: usize,
     /// Current global frame.
     current_frame: usize,
     /// Gate open frame.
@@ -280,10 +280,10 @@ pub struct Adsr {
 impl Default for Adsr {
     fn default() -> Self {
         Self {
-            attack: 0,
-            decay: 0,
+            attack: 5000,
+            decay: 5000,
             sustain: 1.0,
-            release: 0,
+            release: 100,
             current_frame: 0,
             open_frame: 0,
             close_frame: 0,
@@ -311,20 +311,39 @@ impl Node for Adsr {
                     .iter()
                     .zip(trigger.iter())
                     .map(|(i, t)| {
-                        if t.channel(0).unwrap() > &0.0 {
+                        let gate = t.channel(0).unwrap();
+
+                        if gate == &1.0 && self.close_frame < self.current_frame {
                             self.level = 0.0;
                             self.open_frame = self.current_frame;
                             self.close_frame = usize::max_value();
-                        } else {
+                        } else if gate == &0.0 && self.close_frame == usize::max_value() {
                             self.close_frame = self.current_frame + self.release as usize;
                         }
 
                         let mut frame = Frame::equilibrium();
 
-                        // ADSR
-                        if (self.open_frame..self.close_frame).contains(&self.current_frame) {
-                            frame = *i;
-                        } else {
+                        let attack_end = self.open_frame + self.attack;
+                        let decay_end = attack_end + self.decay;
+                        let release_end = self
+                            .close_frame
+                            .checked_add(self.release)
+                            .unwrap_or(usize::max_value());
+
+                        // Attack
+                        if (self.open_frame..attack_end).contains(&self.current_frame) {
+                            let d_attack = self.current_frame - self.open_frame;
+                            let level = (d_attack as f32 / self.attack as f32).min(1.0);
+
+                            frame = i.scale_amp(level);
+                        }
+
+                        // Decay
+                        if (attack_end..decay_end).contains(&self.current_frame) {
+                            let d_decay = self.current_frame - attack_end;
+                            let level = 1.0 - (d_decay as f32 / self.decay as f32).min(1.0);
+
+                            frame = i.scale_amp(level);
                         }
 
                         self.current_frame += 1;
