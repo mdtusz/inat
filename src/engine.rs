@@ -267,8 +267,6 @@ pub struct Adsr {
     sustain: Gain,
     /// Release time in samples.
     release: usize,
-    /// Current global frame.
-    current_frame: usize,
     /// Gate open frame.
     open_frame: usize,
     /// Gate close frame.
@@ -280,11 +278,10 @@ pub struct Adsr {
 impl Default for Adsr {
     fn default() -> Self {
         Self {
-            attack: 5000,
-            decay: 5000,
+            attack: 100,
+            decay: 0,
             sustain: 1.0,
-            release: 100,
-            current_frame: 0,
+            release: 10000,
             open_frame: 0,
             close_frame: 0,
             level: 0.0,
@@ -305,49 +302,62 @@ impl Node for Adsr {
 
         match (maybe_input, maybe_trigger) {
             (Some(input), Some(trigger)) => {
-                self.current_frame = start_frame;
-
                 input
                     .iter()
                     .zip(trigger.iter())
-                    .map(|(i, t)| {
+                    .enumerate()
+                    .map(|(i, (inp, t))| {
+                        let current_frame = start_frame + i;
                         let gate = t.channel(0).unwrap();
 
-                        if gate == &1.0 && self.close_frame < self.current_frame {
-                            self.level = 0.0;
-                            self.open_frame = self.current_frame;
+                        if gate == &1.0 && self.close_frame < current_frame {
+                            self.open_frame = current_frame;
                             self.close_frame = usize::max_value();
                         } else if gate == &0.0 && self.close_frame == usize::max_value() {
-                            self.close_frame = self.current_frame;
+                            self.close_frame = current_frame;
                         }
 
-                        let mut frame = Frame::equilibrium();
-
-                        let attack_end = self.open_frame + self.attack;
-                        let decay_end = attack_end + self.decay;
-                        let release_end = self
-                            .close_frame
+                        let decay_start = (self.open_frame + self.attack).max(self.close_frame);
+                        let sustain_start = decay_start + self.decay;
+                        let release_start = decay_start.max(self.close_frame);
+                        let release_end = release_start
                             .checked_add(self.release)
                             .unwrap_or(usize::max_value());
 
-                        // Attack
-                        if (self.open_frame..attack_end).contains(&self.current_frame) {
-                            let d_attack = self.current_frame - self.open_frame;
-                            let level = (d_attack as f32 / self.attack as f32).min(1.0);
+                        if self.open_frame == self.close_frame {
+                            return F::equilibrium();
+                        }
 
-                            frame = i.scale_amp(level);
+                        // Attack
+                        if (self.open_frame..decay_start).contains(&current_frame) {
+                            let delta = current_frame - self.open_frame;
+                            let attack_level = (delta as f32 / self.attack as f32).min(1.0);
+                            self.level = (self.level + attack_level).min(1.0);
+                            return inp.scale_amp(self.level);
+                        }
+
+                        // Release
+                        if (release_start..release_end).contains(&current_frame) {
+                            let delta = current_frame - self.close_frame;
+                            let level = 1.0 - (delta as f32 / self.release as f32).min(1.0);
+                            self.level = self.sustain * level;
+                            return inp.scale_amp(self.level);
                         }
 
                         // Decay
-                        if (attack_end..decay_end).contains(&self.current_frame) {
-                            let d_decay = self.current_frame - attack_end;
-                            let level = 1.0 - (d_decay as f32 / self.decay as f32).min(1.0);
-
-                            frame = i.scale_amp(level);
+                        if (decay_start..sustain_start).contains(&current_frame) {
+                            let delta = current_frame - decay_start;
+                            self.level = 1.0 - (delta as f32 / self.decay as f32).min(1.0);
+                            return inp.scale_amp(self.level);
                         }
 
-                        self.current_frame += 1;
-                        frame
+                        // Sustain
+                        if (sustain_start..release_start).contains(&current_frame) {
+                            self.level = self.sustain;
+                            return inp.scale_amp(self.level);
+                        }
+
+                        F::equilibrium()
                     })
                     .collect()
             }
@@ -384,7 +394,7 @@ impl Gate {
 
     pub fn trigger(&mut self, frame: usize) {
         self.open(frame);
-        self.close(frame + 4000);
+        self.close(frame + 1);
     }
 
     fn check_open(&mut self, frame: &usize) {

@@ -33,7 +33,7 @@ struct Transport {
 
 impl Transport {
     fn new() -> Self {
-        Self { playing: false }
+        Self { playing: true }
     }
     fn play_pause(&mut self) {
         self.playing = !self.playing;
