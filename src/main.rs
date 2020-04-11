@@ -31,6 +31,7 @@ struct Transport {
     frame: usize,
     pub playing: bool,
     step: usize,
+    pub sequence_length: usize,
     tempo: f64,
 }
 
@@ -40,6 +41,7 @@ impl Transport {
             frame: 0,
             playing: true,
             step: 0,
+            sequence_length: 64,
             tempo: 120.0,
         }
     }
@@ -55,30 +57,29 @@ impl Transport {
 
 struct App {
     graph: Graph<DspNode>,
-    ui: UiState,
     transport: Transport,
+    ui: UiState,
 }
 
 impl App {
     fn new() -> Self {
         let mut graph = Graph::new();
+        let transport = Transport::new();
         let ui = UiState::new();
 
         let master = graph.add_node(DspNode::Gain(1.0));
         graph.set_root(master);
 
-        let osc = graph.add_node(DspNode::Oscillator(Oscillator::default()));
-        let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
+        // let osc = graph.add_node(DspNode::Oscillator(Oscillator::default()));
+        // let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
 
-        graph.connect(osc, adsr, ConnectionKind::Default);
-        graph.connect(adsr, master, ConnectionKind::Default);
-
-        let transport = Transport::new();
+        // graph.connect(osc, adsr, ConnectionKind::Default);
+        // graph.connect(adsr, master, ConnectionKind::Default);
 
         Self {
             graph,
-            ui,
             transport,
+            ui,
         }
     }
 }
@@ -112,8 +113,11 @@ fn main() -> Result<(), pa::Error> {
             if app.transport.frame == next_step.0 {
                 // The 4.0 here is the beats-per-bar.
                 next_step.0 += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
-                next_step.1 = (next_step.1 + 1) % 64;
+                next_step.1 = (next_step.1 + 1) % app.transport.sequence_length;
+
+                // TODO: Choose which of these is canonical.
                 app.ui.step = next_step.1;
+                app.transport.step = next_step.1;
 
                 // How to schedule? This is a bit of a struggle because we need to be able to
                 // struggle per-node. I'm unsure what's the best way to achieve this per-node
@@ -373,52 +377,52 @@ impl<'b> Widget for Tracker<'b> {
             None => area,
         };
 
-        let tracker_cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                [
-                    Constraint::Length(4),
-                    Constraint::Length(4),
-                    Constraint::Length(4),
-                    Constraint::Length(4),
-                ]
-                .as_ref(),
-            )
-            .split(block_area);
+        // let tracker_cols = Layout::default()
+        //     .direction(Direction::Horizontal)
+        //     .constraints(
+        //         [
+        //             Constraint::Length(4),
+        //             Constraint::Length(4),
+        //             Constraint::Length(4),
+        //             Constraint::Length(4),
+        //         ]
+        //         .as_ref(),
+        //     )
+        //     .split(block_area);
 
-        let notes = self
-            .steps
-            .iter()
-            .map(|step| {
-                step.note
-                    .map(|n| n.to_string())
-                    .unwrap_or("---".to_string())
-            })
-            .collect::<Vec<String>>();
+        // let notes = self
+        //     .steps
+        //     .iter()
+        //     .map(|step| {
+        //         step.note
+        //             .map(|n| n.to_string())
+        //             .unwrap_or("---".to_string())
+        //     })
+        //     .collect::<Vec<String>>();
 
-        SelectableList::default()
-            .items(&notes)
-            .style(Style::default().fg(Color::Rgb(94, 255, 238)))
-            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-            .select(Some(self.active))
-            .draw(tracker_cols[0], buffer);
+        // SelectableList::default()
+        //     .items(&notes)
+        //     .style(Style::default().fg(Color::Rgb(94, 255, 238)))
+        //     .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
+        //     .select(Some(self.active))
+        //     .draw(tracker_cols[0], buffer);
 
-        let instruments = self
-            .steps
-            .iter()
-            .map(|step| {
-                step.instrument
-                    .map(|n| n.to_string())
-                    .unwrap_or("---".to_string())
-            })
-            .collect::<Vec<String>>();
+        // let instruments = self
+        //     .steps
+        //     .iter()
+        //     .map(|step| {
+        //         step.instrument
+        //             .map(|n| n.to_string())
+        //             .unwrap_or("---".to_string())
+        //     })
+        //     .collect::<Vec<String>>();
 
-        SelectableList::default()
-            .items(&instruments)
-            .style(Style::default().fg(Color::Rgb(245, 230, 66)))
-            .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-            .select(Some(self.active))
-            .draw(tracker_cols[1], buffer);
+        // SelectableList::default()
+        //     .items(&instruments)
+        //     .style(Style::default().fg(Color::Rgb(245, 230, 66)))
+        //     .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
+        //     .select(Some(self.active))
+        //     .draw(tracker_cols[1], buffer);
     }
 }
 

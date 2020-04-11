@@ -81,6 +81,7 @@ impl Default for Connection {
 }
 
 impl<N: Node> Graph<N> {
+    /// Create a new and empty graph.
     pub fn new() -> Self {
         let graph = DiGraph::default();
 
@@ -278,10 +279,10 @@ pub struct Adsr {
 impl Default for Adsr {
     fn default() -> Self {
         Self {
-            attack: 100,
-            decay: 0,
-            sustain: 1.0,
-            release: 10000,
+            attack: 22050,
+            decay: 11025,
+            sustain: 0.5,
+            release: 22050,
             open_frame: 0,
             close_frame: 0,
             level: 0.0,
@@ -429,7 +430,7 @@ impl Node for Gate {
 
         frames
             .iter()
-            .map(|f| {
+            .map(|_f| {
                 self.check_open(&current_frame);
                 self.check_closed(&current_frame);
 
