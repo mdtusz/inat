@@ -4,7 +4,6 @@ use std::thread;
 use std::time::Duration;
 
 use log::{debug, info, trace, warn, LevelFilter};
-use petgraph::graph::NodeIndex;
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
@@ -26,50 +25,37 @@ use crate::engine::{
     Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, Wave, CHANNELS,
     FRAMES, SAMPLE_HZ,
 };
+use crate::ui::{Mode, UiState};
 
 struct Transport {
+    frame: usize,
     pub playing: bool,
+    step: usize,
+    tempo: f64,
 }
 
 impl Transport {
     fn new() -> Self {
-        Self { playing: true }
+        Self {
+            frame: 0,
+            playing: true,
+            step: 0,
+            tempo: 120.0,
+        }
     }
     fn play_pause(&mut self) {
         self.playing = !self.playing;
-    }
-}
-#[derive(Clone, Debug)]
-struct UiState {
-    debug: bool,
-    mode: Mode,
-    step: usize,
-    input: String,
-}
 
-impl UiState {
-    fn new() -> Self {
-        Self {
-            debug: false,
-            mode: Mode::Normal,
-            step: 0,
-            input: String::new(),
+        // Reset frames if restarting.
+        if self.playing {
+            self.frame = 0;
         }
     }
 }
 
-#[derive(Clone, Debug)]
-enum Mode {
-    Command,
-    Insert,
-    Normal,
-}
-
 struct App {
     graph: Graph<DspNode>,
-    tempo: f64,
     ui: UiState,
-    trig: NodeIndex,
     transport: Transport,
 }
 
@@ -81,23 +67,18 @@ impl App {
         let master = graph.add_node(DspNode::Gain(1.0));
         graph.set_root(master);
 
-        let trig = graph.add_node(DspNode::Gate(Gate::default()));
         let osc = graph.add_node(DspNode::Oscillator(Oscillator::default()));
         let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
 
-        graph.connect(trig, adsr, ConnectionKind::Trigger);
         graph.connect(osc, adsr, ConnectionKind::Default);
         graph.connect(adsr, master, ConnectionKind::Default);
 
-        let tempo = 120.0;
         let transport = Transport::new();
 
         Self {
             graph,
             ui,
-            tempo,
             transport,
-            trig,
         }
     }
 }
@@ -106,7 +87,7 @@ fn main() -> Result<(), pa::Error> {
     tui_logger::init_logger(LevelFilter::Info).unwrap();
     tui_logger::set_default_level(LevelFilter::Trace);
 
-    let mut app = App::new();
+    let app = App::new();
 
     // Prepare graph for concurrency.
     let pair = Arc::new((Mutex::new(app), Condvar::new()));
@@ -115,51 +96,34 @@ fn main() -> Result<(), pa::Error> {
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
-    let mut current_frame: usize = 0;
-
     // (frame, step) tuple.
     let mut next_step = (0, 0);
 
     let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
         let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
 
-        let (app, trigger) = &*audio_pair;
+        let (app, _trigger) = &*audio_pair;
         let mut app = app.lock().unwrap();
 
-        let initial_frame = current_frame;
-        let next_cycle = current_frame + frames;
+        let initial_frame = app.transport.frame;
+        let next_cycle = app.transport.frame + frames;
 
-        while current_frame < next_cycle {
-            if app.transport.playing {
-                if current_frame == next_step.0 {
-                    // The 4.0 here is the beats-per-bar.
-                    next_step.0 += (SAMPLE_HZ / (app.tempo * 4.0 / 60.0)).round() as usize;
-                    next_step.1 = (next_step.1 + 1) % 64;
-                    app.ui.step = next_step.1;
+        while app.transport.frame < next_cycle {
+            if app.transport.frame == next_step.0 {
+                // The 4.0 here is the beats-per-bar.
+                next_step.0 += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
+                next_step.1 = (next_step.1 + 1) % 64;
+                app.ui.step = next_step.1;
 
-                    // How to schedule? This is a bit of a struggle because we need to be able to
-                    // struggle per-node. I'm unsure what's the best way to achieve this per-node
-                    // though - we could pass a tuple of (frame, Change) or something, but that seems
-                    // exceedingly difficult because of the strict constraints on rust.
+                // How to schedule? This is a bit of a struggle because we need to be able to
+                // struggle per-node. I'm unsure what's the best way to achieve this per-node
+                // though - we could pass a tuple of (frame, Change) or something, but that seems
+                // exceedingly difficult because of the strict constraints on rust.
 
-                    info!("schedule step here! {}", next_step.1);
-                    let t = app.trig;
-
-                    if next_step.1 % 4 == 0 {
-                        match app.graph.graph.node_weight_mut(t) {
-                            Some(n) => match n {
-                                DspNode::Gate(g) => {
-                                    g.trigger(current_frame);
-                                }
-                                _ => {}
-                            },
-                            _ => {}
-                        };
-                    }
-                }
+                info!("schedule step here! {}", next_step.1);
             }
 
-            current_frame += 1;
+            app.transport.frame += 1;
         }
 
         // Compute audio from graph.
@@ -178,7 +142,6 @@ fn main() -> Result<(), pa::Error> {
     stream.start()?;
 
     let stdout = io::stdout().into_raw_mode().unwrap();
-    // let stdin = io::stdin();
     let backend = TermionBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
@@ -265,7 +228,6 @@ fn main() -> Result<(), pa::Error> {
                         app.ui.debug = !app.ui.debug;
                     }
                     Key::Char(':') => {
-                        terminal.show_cursor().unwrap();
                         app.ui.mode = Mode::Command;
                     }
                     _ => {
