@@ -39,13 +39,6 @@ impl Transport {
         self.playing = !self.playing;
     }
 }
-struct App {
-    graph: Graph<DspNode>,
-    ui: UiState,
-    trig: NodeIndex,
-    transport: Transport,
-}
-
 #[derive(Clone, Debug)]
 struct UiState {
     debug: bool,
@@ -72,6 +65,14 @@ enum Mode {
     Normal,
 }
 
+struct App {
+    graph: Graph<DspNode>,
+    tempo: f64,
+    ui: UiState,
+    trig: NodeIndex,
+    transport: Transport,
+}
+
 impl App {
     fn new() -> Self {
         let mut graph = Graph::new();
@@ -88,11 +89,13 @@ impl App {
         graph.connect(osc, adsr, ConnectionKind::Default);
         graph.connect(adsr, master, ConnectionKind::Default);
 
+        let tempo = 120.0;
         let transport = Transport::new();
 
         Self {
             graph,
             ui,
+            tempo,
             transport,
             trig,
         }
@@ -112,7 +115,6 @@ fn main() -> Result<(), pa::Error> {
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
-    let mut tempo: f64 = 100.0;
     let mut current_frame: usize = 0;
 
     // (frame, step) tuple.
@@ -131,7 +133,7 @@ fn main() -> Result<(), pa::Error> {
             if app.transport.playing {
                 if current_frame == next_step.0 {
                     // The 4.0 here is the beats-per-bar.
-                    next_step.0 += (SAMPLE_HZ / (tempo * 4.0 / 60.0)).round() as usize;
+                    next_step.0 += (SAMPLE_HZ / (app.tempo * 4.0 / 60.0)).round() as usize;
                     next_step.1 = (next_step.1 + 1) % 64;
                     app.ui.step = next_step.1;
 
