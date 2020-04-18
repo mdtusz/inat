@@ -27,12 +27,13 @@ use crate::engine::{
 };
 use crate::ui::{Mode, UiState};
 
+#[derive(Clone)]
 struct Transport {
-    frame: usize,
+    pub frame: usize,
     pub playing: bool,
-    step: usize,
+    pub step: usize,
     pub sequence_length: usize,
-    tempo: f64,
+    pub tempo: f64,
 }
 
 impl Transport {
@@ -45,6 +46,7 @@ impl Transport {
             tempo: 120.0,
         }
     }
+
     fn play_pause(&mut self) {
         self.playing = !self.playing;
 
@@ -52,6 +54,14 @@ impl Transport {
         if self.playing {
             self.frame = 0;
         }
+    }
+
+    fn tick(&mut self) {
+        self.frame += 1;
+    }
+
+    fn step(&mut self) {
+        self.step = (self.step + 1) % self.sequence_length;
     }
 }
 
@@ -91,12 +101,10 @@ fn main() -> Result<(), pa::Error> {
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
-    // (frame, step) tuple.
-    let mut next_step = (0, 0);
+    // Next step _frame_.
+    let mut next_step = 0;
 
     let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
-        let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
-
         let (app, _trigger) = &*audio_pair;
         let mut app = app.lock().unwrap();
 
@@ -104,27 +112,22 @@ fn main() -> Result<(), pa::Error> {
         let next_cycle = app.transport.frame + frames;
 
         while app.transport.frame < next_cycle {
-            if app.transport.frame == next_step.0 {
+            if app.transport.frame == next_step {
                 // The 4.0 here is the beats-per-bar.
-                next_step.0 += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
-                next_step.1 = (next_step.1 + 1) % app.transport.sequence_length;
+                next_step += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
 
-                // TODO: Choose which of these is canonical.
-                app.ui.step = next_step.1;
-                app.transport.step = next_step.1;
+                // TODO: Choose which of these is canonical - definitely the transport.
+                app.transport.step();
+                app.ui.step = app.transport.step;
 
-                // How to schedule? This is a bit of a struggle because we need to be able to
-                // struggle per-node. I'm unsure what's the best way to achieve this per-node
-                // though - we could pass a tuple of (frame, Change) or something, but that seems
-                // exceedingly difficult because of the strict constraints on rust.
-
-                info!("schedule step here! {}", next_step.1);
+                info!("schedule step here! {}", app.transport.step);
             }
 
-            app.transport.frame += 1;
+            app.transport.tick();
         }
 
         // Compute audio from graph.
+        let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
         let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frames);
 
         sample::slice::write(buffer, &frames);
@@ -237,6 +240,7 @@ fn main() -> Result<(), pa::Error> {
         };
 
         let ui = app.ui.clone();
+        let transport = app.transport.clone();
 
         // Drop the app reference so the audio thread can acquire a lock more quickly.
         drop(app);
@@ -269,7 +273,7 @@ fn main() -> Result<(), pa::Error> {
                             .title(&make_title("Tracker"))
                             .borders(Borders::TOP),
                     )
-                    .active(ui.step)
+                    .active(transport.step)
                     .render(&mut f, main_view[0]);
 
                 Source::new()
@@ -337,7 +341,6 @@ impl<'b> Widget for Source<'b> {
 
 struct Tracker<'b> {
     block: Option<Block<'b>>,
-    steps: [Step; 64],
     active: usize,
 }
 
@@ -345,7 +348,6 @@ impl<'b> Tracker<'b> {
     fn new() -> Self {
         Tracker {
             block: None,
-            steps: [Step::empty(); 64],
             active: 0,
         }
     }

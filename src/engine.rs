@@ -35,51 +35,6 @@ pub struct Graph<N: Node> {
     root_index: Option<NodeIndex>,
 }
 
-pub trait Node {
-    /// Compute the node signal for a given frame buffer.
-    fn compute_signal(
-        &mut self,
-        inputs: HashMap<ConnectionKind, Vec<Frame>>,
-        sample_rate: f64,
-        start_frame: usize,
-        frames: usize,
-    ) -> Vec<Frame>;
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum ConnectionKind {
-    /// Default connection type.
-    Default,
-
-    /// A trigger connection type.
-    Trigger,
-}
-
-/// The edge type linking graph nodes together.
-pub struct Connection {
-    /// The signal produced from upstream of this connection edge.
-    signal: Vec<Frame>,
-
-    /// The type of connection this edge makes with it's downstream neighbor.
-    kind: ConnectionKind,
-}
-
-impl Connection {
-    /// Creates a new connection of the specified kind.
-    fn new(kind: ConnectionKind) -> Self {
-        Self {
-            signal: Vec::new(),
-            kind: kind,
-        }
-    }
-}
-
-impl Default for Connection {
-    fn default() -> Self {
-        Self::new(ConnectionKind::Default)
-    }
-}
-
 impl<N: Node> Graph<N> {
     /// Create a new and empty graph.
     pub fn new() -> Self {
@@ -144,12 +99,85 @@ impl<N: Node> Graph<N> {
     }
 }
 
+pub trait Node {
+    /// Compute the node signal for a given frame buffer.
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame>;
+}
+
+/// The edge type linking graph nodes together.
+pub struct Connection {
+    /// The signal produced from upstream of this connection edge.
+    signal: Vec<Frame>,
+
+    /// The type of connection this edge makes with it's downstream neighbor.
+    kind: ConnectionKind,
+}
+
+impl Connection {
+    /// Creates a new connection of the specified kind.
+    fn new(kind: ConnectionKind) -> Self {
+        Self {
+            signal: Vec::new(),
+            kind: kind,
+        }
+    }
+}
+
+impl Default for Connection {
+    fn default() -> Self {
+        Self::new(ConnectionKind::Default)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ConnectionKind {
+    /// Default connection type.
+    Default,
+
+    /// A trigger connection type.
+    Trigger,
+}
+
 #[derive(Debug)]
 pub enum DspNode {
     Adsr(Adsr),
     Gain(Gain),
     Gate(Gate),
     Oscillator(Oscillator),
+}
+
+impl Node for DspNode {
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame> {
+        match self {
+            DspNode::Adsr(adsr) => adsr.compute_signal(inputs, sample_rate, start_frame, frames),
+            DspNode::Gain(value) => {
+                if let Some(input) = inputs.get(&ConnectionKind::Default) {
+                    input
+                        .iter()
+                        .map(|frame| frame.map(|sample| sample.mul_amp(*value)))
+                        .collect()
+                } else {
+                    vec![Frame::equilibrium(); frames]
+                }
+            }
+            DspNode::Gate(gate) => gate.compute_signal(inputs, sample_rate, start_frame, frames),
+            DspNode::Oscillator(osc) => {
+                osc.compute_signal(inputs, sample_rate, start_frame, frames)
+            }
+        }
+    }
 }
 
 /// Primitive wave types.
@@ -166,9 +194,14 @@ pub enum Wave {
 /// Basic oscillator for generating wave signals.
 #[derive(Clone, Debug)]
 pub struct Oscillator {
-    pub frequency: Frequency,
+    /// Oscillator frequency.
+    frequency: Frequency,
+
+    /// Wave phase.
     phase: Phase,
-    pub wave: Wave,
+
+    /// Wave shape for the oscillator.
+    wave: Wave,
 }
 
 impl Oscillator {
@@ -262,16 +295,22 @@ impl Node for Oscillator {
 pub struct Adsr {
     /// Attack time in samples.
     attack: usize,
+
     /// Decay time in samples.
     decay: usize,
+
     /// Sustain gain level.
     sustain: Gain,
+
     /// Release time in samples.
     release: usize,
+
     /// Gate open frame.
     open_frame: usize,
+
     /// Gate close frame.
     close_frame: usize,
+
     /// Amp level.
     level: Gain,
 }
@@ -294,7 +333,7 @@ impl Node for Adsr {
     fn compute_signal(
         &mut self,
         inputs: HashMap<ConnectionKind, Vec<Frame>>,
-        sample_rate: f64,
+        _sample_rate: f64,
         start_frame: usize,
         frames: usize,
     ) -> Vec<Frame> {
@@ -369,8 +408,13 @@ impl Node for Adsr {
 
 #[derive(Debug)]
 pub struct Gate {
+    /// Whether or not the gate is currently open.
     open: bool,
+
+    /// Queue of frames for when to open the gate.
     open_queue: VecDeque<usize>,
+
+    /// Queue of frames for when to close the gate.
     close_queue: VecDeque<usize>,
 }
 
@@ -385,35 +429,46 @@ impl Default for Gate {
 }
 
 impl Gate {
+    /// Queue a gate open.
     pub fn open(&mut self, frame: usize) {
         self.open_queue.push_back(frame);
     }
 
+    /// Queue a gate close.
     pub fn close(&mut self, frame: usize) {
         self.close_queue.push_back(frame);
     }
 
+    /// Queue a gate trigger (1 frame total).
     pub fn trigger(&mut self, frame: usize) {
         self.open(frame);
         self.close(frame + 1);
     }
 
-    fn check_open(&mut self, frame: &usize) {
+    /// Check whether the gate should open at the given frame and set if so.
+    fn check_open(&mut self, frame: &usize) -> bool {
         if let Some(f) = self.open_queue.front() {
             if f == frame {
                 self.open_queue.pop_front();
                 self.open = true;
+                return true;
             }
         }
+
+        false
     }
 
-    fn check_closed(&mut self, frame: &usize) {
+    /// Check whether the gate should close at the given frame and set if so.
+    fn check_closed(&mut self, frame: &usize) -> bool {
         if let Some(f) = self.close_queue.front() {
             if f == frame {
                 self.close_queue.pop_front();
                 self.open = false;
+                return true;
             }
         }
+
+        false
     }
 }
 
@@ -443,34 +498,6 @@ impl Node for Gate {
                 }
             })
             .collect()
-    }
-}
-
-impl Node for DspNode {
-    fn compute_signal(
-        &mut self,
-        inputs: HashMap<ConnectionKind, Vec<Frame>>,
-        sample_rate: f64,
-        start_frame: usize,
-        frames: usize,
-    ) -> Vec<Frame> {
-        match self {
-            DspNode::Adsr(adsr) => adsr.compute_signal(inputs, sample_rate, start_frame, frames),
-            DspNode::Gain(value) => {
-                if let Some(input) = inputs.get(&ConnectionKind::Default) {
-                    input
-                        .iter()
-                        .map(|frame| frame.map(|sample| sample.mul_amp(*value)))
-                        .collect()
-                } else {
-                    vec![Frame::equilibrium(); frames]
-                }
-            }
-            DspNode::Gate(gate) => gate.compute_signal(inputs, sample_rate, start_frame, frames),
-            DspNode::Oscillator(osc) => {
-                osc.compute_signal(inputs, sample_rate, start_frame, frames)
-            }
-        }
     }
 }
 
@@ -518,6 +545,7 @@ where
     }
 }
 
+/// Noise generator.
 fn noise<S: Sample>(seed: usize) -> S
 where
     S: Sample + FromSample<f32>,
