@@ -70,12 +70,6 @@ impl App {
         let master = graph.add_node(DspNode::Gain(1.0));
         graph.set_root(master);
 
-        // let osc = graph.add_node(DspNode::Oscillator(Oscillator::default()));
-        // let adsr = graph.add_node(DspNode::Adsr(Adsr::default()));
-
-        // graph.connect(osc, adsr, ConnectionKind::Default);
-        // graph.connect(adsr, master, ConnectionKind::Default);
-
         Self {
             graph,
             transport,
