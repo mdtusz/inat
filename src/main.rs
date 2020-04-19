@@ -22,8 +22,8 @@ mod engine;
 mod ui;
 
 use crate::engine::{
-    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, Wave, CHANNELS,
-    FRAMES, SAMPLE_HZ,
+    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, Sampler, Wave,
+    CHANNELS, FRAMES, SAMPLE_HZ,
 };
 use crate::ui::{Mode, UiState};
 
@@ -77,7 +77,10 @@ impl App {
         let transport = Transport::new();
         let ui = UiState::new();
 
+        let s = graph.add_node(DspNode::Sampler(Sampler::new()));
         let master = graph.add_node(DspNode::Gain(1.0));
+
+        graph.connect(s, master, ConnectionKind::Default);
         graph.set_root(master);
 
         Self {

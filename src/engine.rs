@@ -1,14 +1,18 @@
 use log::info;
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::PathBuf;
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Topo;
 use petgraph::Direction;
 
+use hound::WavReader;
 use sample::conv::FromSample;
 use sample::frame::{Frame as F, Stereo};
-use sample::Sample;
+use sample::{signal, Sample, Signal};
 
 pub const CHANNELS: usize = 2;
 pub const FRAMES: u32 = 256;
@@ -150,6 +154,7 @@ pub enum DspNode {
     Gain(Gain),
     Gate(Gate),
     Oscillator(Oscillator),
+    Sampler(Sampler),
 }
 
 impl Node for DspNode {
@@ -176,19 +181,85 @@ impl Node for DspNode {
             DspNode::Oscillator(osc) => {
                 osc.compute_signal(inputs, sample_rate, start_frame, frames)
             }
+            DspNode::Sampler(sampler) => {
+                sampler.compute_signal(inputs, sample_rate, start_frame, frames)
+            }
         }
     }
 }
 
-/// Primitive wave types.
-#[derive(Clone, Copy, Debug)]
-pub enum Wave {
-    Noise,
-    Ramp,
-    Sine,
-    Square,
-    Saw,
-    Triangle,
+pub struct Sampler {
+    sample: WavReader<BufReader<File>>,
+    gain: f32,
+}
+
+impl std::fmt::Debug for Sampler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sampler")
+            .field("type", &"Sample".to_string())
+            .finish()
+    }
+}
+
+impl Sampler {
+    pub fn new() -> Self {
+        let mut sample =
+            WavReader::open("/home/miklos/Documents/audio/samples/chords/lofi_jazz_piano/16.wav")
+                .expect("File not found!");
+
+        // Find the max amplitude of the sample for automatic gain adjustment.
+        let max_amp = sample
+            .samples::<i32>()
+            .max_by(|a, b| {
+                a.as_ref()
+                    .unwrap_or(&0)
+                    .abs()
+                    .cmp(&b.as_ref().unwrap_or(&0).abs())
+            })
+            .unwrap()
+            .unwrap();
+
+        // Reset the sample to the start position.
+        sample.seek(0).unwrap();
+
+        let gain = 1.0 / max_amp as f32;
+
+        Self { sample, gain }
+    }
+}
+
+impl Node for Sampler {
+    fn compute_signal(
+        &mut self,
+        inputs: HashMap<ConnectionKind, Vec<Frame>>,
+        sample_rate: f64,
+        start_frame: usize,
+        frames: usize,
+    ) -> Vec<Frame> {
+        let gain = self.gain;
+        let samples = self
+            .sample
+            .samples::<i32>()
+            .filter_map(Result::ok)
+            .map(|f| (f as f32).mul_amp(gain));
+
+        let mut sample_frames = signal::from_interleaved_samples_iter(samples).until_exhausted();
+
+        let mut out = Vec::new();
+
+        for _ in 0..frames {
+            match sample_frames.next() {
+                Some(f) => {
+                    out.push(f);
+                }
+                None => {
+                    out.push(F::equilibrium());
+                }
+            }
+        }
+
+        out
+    }
 }
 
 /// Basic oscillator for generating wave signals.
@@ -499,6 +570,17 @@ impl Node for Gate {
             })
             .collect()
     }
+}
+
+/// Primitive wave types.
+#[derive(Clone, Copy, Debug)]
+pub enum Wave {
+    Noise,
+    Ramp,
+    Sine,
+    Square,
+    Saw,
+    Triangle,
 }
 
 /// Ramp wave generator.
