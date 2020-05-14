@@ -93,7 +93,7 @@ dependencies = [
  "portaudio",
  "sample",
  "termion",
- "tui",
+ "tui 0.9.3",
  "tui-logger",
 ]
 
@@ -111,6 +111,15 @@ name = "itertools"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f56a2d0bc861f9165be4eb3442afd3c236d8a98afd426f65d92324ae1091a484"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
 dependencies = [
  "either",
 ]
@@ -309,8 +318,23 @@ dependencies = [
  "bitflags 1.2.1",
  "cassowary",
  "either",
- "itertools",
+ "itertools 0.8.2",
  "log",
+ "termion",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "tui"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89e8ecff008935939a4cf834c6e96e6cfb60f65f7d2e009027125f4df492a8d6"
+dependencies = [
+ "bitflags 1.2.1",
+ "cassowary",
+ "either",
+ "itertools 0.9.0",
  "termion",
  "unicode-segmentation",
  "unicode-width",
@@ -328,7 +352,7 @@ dependencies = [
  "log",
  "parking_lot",
  "termion",
- "tui",
+ "tui 0.8.0",
 ]
 
 [[package]]

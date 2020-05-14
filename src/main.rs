@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::io;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use log::{debug, info, trace, warn, LevelFilter};
+use log::{info, LevelFilter};
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
@@ -12,18 +13,18 @@ use termion::raw::IntoRawMode;
 use tui::backend::TermionBackend;
 use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::symbols::line::{VERTICAL_LEFT, VERTICAL_RIGHT};
-use tui::widgets::{Block, Borders, List, Paragraph, SelectableList, Table, Text, Widget};
+use tui::style::{Color, Style};
+use tui::symbols::{bar, block, line};
+use tui::widgets::{Block, Borders, Paragraph, Sparkline, Text, Widget};
 use tui::Terminal;
-use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
+use tui_logger::TuiLoggerWidget;
 
 mod engine;
 mod ui;
 
 use crate::engine::{
-    Adsr, ConnectionKind, DspNode, Frame as F, Gate, Graph, Oscillator, Output, Sampler, Wave,
-    CHANNELS, FRAMES, SAMPLE_HZ,
+    ConnectionKind, DspNode, Frame as F, Graph, NodeId, Output, Sampler, CHANNELS, FRAMES,
+    SAMPLE_HZ,
 };
 use crate::ui::{Mode, UiState};
 
@@ -42,7 +43,7 @@ impl Transport {
             frame: 0,
             playing: true,
             step: 0,
-            sequence_length: 64,
+            sequence_length: 16,
             tempo: 120.0,
         }
     }
@@ -53,6 +54,7 @@ impl Transport {
         // Reset frames if restarting.
         if self.playing {
             self.frame = 0;
+            self.step = 0;
         }
     }
 
@@ -61,14 +63,26 @@ impl Transport {
     }
 
     fn step(&mut self) {
-        self.step = (self.step + 1) % self.sequence_length;
+        self.step_by(1);
+    }
+
+    fn step_by(&mut self, step: i16) {
+        let mut offset = step;
+
+        while offset < 0 {
+            offset += self.sequence_length as i16;
+        }
+
+        self.step = (self.step + offset as usize) % self.sequence_length;
     }
 }
 
 struct App {
     graph: Graph<DspNode>,
     transport: Transport,
+    samples: HashMap<String, NodeId>,
     ui: UiState,
+    steps: Vec<bool>,
 }
 
 impl App {
@@ -77,16 +91,22 @@ impl App {
         let transport = Transport::new();
         let ui = UiState::new();
 
-        let s = graph.add_node(DspNode::Sampler(Sampler::new()));
+        let mut samples = HashMap::new();
+
         let master = graph.add_node(DspNode::Gain(1.0));
+        let s = graph.add_node(DspNode::Sampler(Sampler::new()));
 
         graph.connect(s, master, ConnectionKind::Default);
         graph.set_root(master);
 
+        let mut steps = vec![false; 16];
+
         Self {
             graph,
             transport,
+            samples,
             ui,
+            steps,
         }
     }
 }
@@ -112,16 +132,20 @@ fn main() -> Result<(), pa::Error> {
         let mut app = app.lock().unwrap();
 
         let initial_frame = app.transport.frame;
-        let next_cycle = app.transport.frame + frames;
+        let mut next_cycle = app.transport.frame;
+
+        if app.transport.playing {
+            next_cycle += frames;
+        } else {
+            next_step = 0;
+        }
 
         while app.transport.frame < next_cycle {
             if app.transport.frame == next_step {
                 // The 4.0 here is the beats-per-bar.
                 next_step += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
 
-                // TODO: Choose which of these is canonical - definitely the transport.
                 app.transport.step();
-                app.ui.step = app.transport.step;
 
                 info!("schedule step here! {}", app.transport.step);
             }
@@ -129,11 +153,14 @@ fn main() -> Result<(), pa::Error> {
             app.transport.tick();
         }
 
-        // Compute audio from graph.
         let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
-        let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frames);
 
-        sample::slice::write(buffer, &frames);
+        if app.transport.playing {
+            let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frames);
+            sample::slice::write(buffer, &frames);
+        } else {
+            sample::slice::equilibrium(buffer);
+        }
 
         pa::Continue
     };
@@ -189,8 +216,14 @@ fn main() -> Result<(), pa::Error> {
                     }
                     Key::Char('\n') => {
                         if app.ui.input == "q" {
-                            terminal.clear();
+                            terminal.clear().unwrap();
                             break;
+                        }
+
+                        if app.ui.input == "tempo" {
+                            app.ui.input = format!("{}", app.transport.tempo);
+                            app.ui.mode = Mode::Normal;
+                            continue;
                         }
 
                         terminal.hide_cursor().unwrap();
@@ -232,7 +265,14 @@ fn main() -> Result<(), pa::Error> {
                         app.ui.debug = !app.ui.debug;
                     }
                     Key::Char(':') => {
+                        app.ui.input = String::new();
                         app.ui.mode = Mode::Command;
+                    }
+                    Key::Up => {
+                        app.transport.step_by(-1);
+                    }
+                    Key::Down => {
+                        app.transport.step_by(1);
                     }
                     _ => {
                         info!("Unhandled key event: {:?}", key);
@@ -244,202 +284,189 @@ fn main() -> Result<(), pa::Error> {
 
         let ui = app.ui.clone();
         let transport = app.transport.clone();
+        let samples = app.samples.clone();
+        let steps = app.steps.clone();
 
         // Drop the app reference so the audio thread can acquire a lock more quickly.
         drop(app);
 
-        terminal.draw(|mut f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
-                .split(f.size());
-
-            if ui.debug {
-                TuiLoggerWidget::default()
-                    .block(
-                        Block::default()
-                            .title("Logs ")
-                            .title_style(Style::default().fg(Color::Blue))
-                            .borders(Borders::TOP),
+        terminal
+            .draw(|mut f| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(
+                        [
+                            Constraint::Min(0),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                        ]
+                        .as_ref(),
                     )
-                    .style(Style::default().fg(Color::White).bg(Color::Black))
-                    .render(&mut f, chunks[0]);
-            } else {
-                let main_view = Layout::default()
+                    .split(f.size());
+
+                let command_line = CommandLine {
+                    mode: ui.mode,
+                    input: ui.input,
+                };
+
+                let graph_nodes = Samples(samples);
+                let lane = Lane(steps, transport.step);
+
+                let lanes = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+                    .constraints(
+                        [
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                            Constraint::Ratio(1, 8),
+                        ]
+                        .as_ref(),
+                    )
                     .split(chunks[0]);
 
-                Tracker::new()
-                    .block(
-                        Block::default()
-                            .title(&make_title("Tracker"))
-                            .borders(Borders::TOP),
-                    )
-                    .active(transport.step)
-                    .render(&mut f, main_view[0]);
+                f.render_widget(lane.clone(), lanes[0]);
+                f.render_widget(lane.clone(), lanes[1]);
+                f.render_widget(lane.clone(), lanes[2]);
+                f.render_widget(lane.clone(), lanes[3]);
+                f.render_widget(lane.clone(), lanes[4]);
+                f.render_widget(lane.clone(), lanes[5]);
+                f.render_widget(lane.clone(), lanes[6]);
+                f.render_widget(lane.clone(), lanes[7]);
+                // f.render_widget(graph_nodes, chunks[0]);
+                f.render_widget(transport, chunks[1]);
+                f.render_widget(command_line, chunks[2]);
+            })
+            .unwrap();
 
-                Source::new()
-                    .block(
-                        Block::default()
-                            .title(&make_title("Source"))
-                            .borders(Borders::TOP),
-                    )
-                    .render(&mut f, main_view[1]);
-            }
-
-            // Command line.
-            let default = Style::default();
-            let (mode, style) = match ui.mode {
-                Mode::Command => {
-                    let text = format!(":{}", ui.input);
-                    (text, default.bg(Color::Rgb(50, 50, 100)).fg(Color::White))
-                }
-                Mode::Insert => (
-                    "insert".to_string(),
-                    default.bg(Color::Rgb(0, 100, 0)).fg(Color::Black),
-                ),
-                Mode::Normal => (
-                    "normal".to_string(),
-                    default.bg(Color::Rgb(50, 50, 50)).fg(Color::White),
-                ),
-            };
-
-            Paragraph::new([Text::raw(mode)].iter())
-                .style(style)
-                .render(&mut f, chunks[1]);
-        });
         terminal.autoresize().unwrap();
     }
 
     Ok(())
 }
 
-struct Source<'b> {
-    block: Option<Block<'b>>,
+struct CommandLine {
+    mode: Mode,
+    input: String,
 }
 
-impl<'b> Source<'b> {
-    fn new() -> Self {
-        Source { block: None }
-    }
-
-    fn block(&mut self, block: Block<'b>) -> &mut Self {
-        self.block = Some(block);
-        self
-    }
-}
-
-impl<'b> Widget for Source<'b> {
-    fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
-        let block_area = match self.block {
-            Some(ref mut b) => {
-                b.draw(area, buffer);
-                b.inner(area)
+impl Widget for CommandLine {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let default = Style::default();
+        let (text, style) = match self.mode {
+            Mode::Command => {
+                let text = format!(":{}", self.input);
+                (text, default.bg(Color::Rgb(50, 50, 100)).fg(Color::White))
             }
-            None => area,
-        };
-    }
-}
-
-struct Tracker<'b> {
-    block: Option<Block<'b>>,
-    active: usize,
-}
-
-impl<'b> Tracker<'b> {
-    fn new() -> Self {
-        Tracker {
-            block: None,
-            active: 0,
-        }
-    }
-
-    fn block(&mut self, block: Block<'b>) -> &mut Self {
-        self.block = Some(block);
-        self
-    }
-
-    fn active(&mut self, active: usize) -> &mut Self {
-        self.active = active;
-        self
-    }
-}
-
-impl<'b> Widget for Tracker<'b> {
-    fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
-        let block_area = match self.block {
-            Some(ref mut b) => {
-                b.draw(area, buffer);
-                b.inner(area)
-            }
-            None => area,
+            Mode::Insert => (
+                "insert".to_string(),
+                default.bg(Color::Rgb(0, 100, 0)).fg(Color::Black),
+            ),
+            Mode::Normal => (
+                "normal".to_string(),
+                default.bg(Color::Rgb(50, 50, 50)).fg(Color::White),
+            ),
         };
 
-        // let tracker_cols = Layout::default()
-        //     .direction(Direction::Horizontal)
-        //     .constraints(
-        //         [
-        //             Constraint::Length(4),
-        //             Constraint::Length(4),
-        //             Constraint::Length(4),
-        //             Constraint::Length(4),
-        //         ]
-        //         .as_ref(),
-        //     )
-        //     .split(block_area);
-
-        // let notes = self
-        //     .steps
-        //     .iter()
-        //     .map(|step| {
-        //         step.note
-        //             .map(|n| n.to_string())
-        //             .unwrap_or("---".to_string())
-        //     })
-        //     .collect::<Vec<String>>();
-
-        // SelectableList::default()
-        //     .items(&notes)
-        //     .style(Style::default().fg(Color::Rgb(94, 255, 238)))
-        //     .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-        //     .select(Some(self.active))
-        //     .draw(tracker_cols[0], buffer);
-
-        // let instruments = self
-        //     .steps
-        //     .iter()
-        //     .map(|step| {
-        //         step.instrument
-        //             .map(|n| n.to_string())
-        //             .unwrap_or("---".to_string())
-        //     })
-        //     .collect::<Vec<String>>();
-
-        // SelectableList::default()
-        //     .items(&instruments)
-        //     .style(Style::default().fg(Color::Rgb(245, 230, 66)))
-        //     .highlight_style(Style::default().bg(Color::Rgb(20, 50, 20)))
-        //     .select(Some(self.active))
-        //     .draw(tracker_cols[1], buffer);
+        buffer.set_background(area, style.bg);
+        buffer.set_string(area.x, area.y, text, style);
     }
 }
 
-#[derive(Clone, Copy)]
-struct Step {
-    instrument: Option<u8>,
-    note: Option<u8>,
-}
+#[derive(Clone)]
+struct Lane(Vec<bool>, usize);
 
-impl Step {
-    fn empty() -> Self {
-        Self {
-            instrument: None,
-            note: None,
+impl Widget for Lane {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let middle = (area.height / 2) - 1;
+        let steps = self.0.len();
+
+        for i in 0..area.height {
+            let mut style = Style::default();
+
+            let step_index = match (self.1 + i as usize).checked_sub(middle as usize) {
+                Some(v) => v as usize,
+                None => continue,
+            };
+
+            if step_index >= steps {
+                continue;
+            }
+
+            if step_index % 4 == 0 {
+                style = style.fg(Color::Rgb(150, 150, 150));
+            }
+
+            if i == middle {
+                style = style.fg(Color::Red);
+            }
+
+            buffer.set_string(
+                area.x,
+                area.y + i as u16,
+                format!("{:2.}", step_index),
+                style,
+            );
+
+            buffer.set_string(
+                area.x + 3,
+                area.y + i as u16,
+                format!("12 22 -- {:?}", self.0.get(step_index)),
+                style,
+            );
         }
     }
 }
 
-fn make_title(s: &str) -> String {
-    format!("{} {} {}", VERTICAL_LEFT, s, VERTICAL_RIGHT)
+struct Samples(HashMap<String, NodeId>);
+
+impl Widget for Samples {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let mut line_number = area.y;
+        let style = Style::default();
+
+        self.0.iter().for_each(|n| {
+            buffer.set_string(area.x, line_number, format!("{}: {:?}", n.0, n.1), style);
+            line_number += 1;
+        });
+    }
+}
+
+impl Widget for Transport {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let ticks = match self.step % 4 {
+            0 => format!("{}   ", bar::FULL),
+            1 => format!("{}{}  ", bar::FULL, bar::FULL),
+            2 => format!("{}{}{} ", bar::FULL, bar::FULL, bar::FULL),
+            3 => format!("{}{}{}{}", bar::FULL, bar::FULL, bar::FULL, bar::FULL),
+            _ => unreachable!(),
+        };
+
+        let play_pause = match self.playing {
+            true => "Playing",
+            false => "Stopped",
+        };
+
+        let style = Style::default();
+        let tick_style = if self.step % 4 == 0 {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        buffer.set_string(area.width - 4, area.y, ticks, tick_style);
+        buffer.set_string(
+            area.x,
+            area.y,
+            format!(
+                "{} T: {:.2} Step: {:2.} Frame: {} Seq: {}",
+                play_pause, self.tempo, self.step, self.frame, self.sequence_length
+            ),
+            style,
+        );
+    }
 }

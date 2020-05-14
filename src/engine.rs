@@ -1,6 +1,7 @@
 use log::info;
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
+use std::fmt;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ pub type Phase = f64;
 pub type Gain = f32;
 pub type Output = f32;
 pub type Frame = Stereo<f32>;
+
+pub type NodeId = NodeIndex;
 
 /// General graph struct for storing and processing nodes within the DSP chain.
 ///
@@ -157,6 +160,19 @@ pub enum DspNode {
     Sampler(Sampler),
 }
 
+impl fmt::Display for DspNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let dsp_node = match self {
+            Self::Adsr(_) => "ADSR",
+            Self::Gain(_) => "Gain",
+            Self::Gate(_) => "Gate",
+            Self::Oscillator(_) => "Oscillator",
+            Self::Sampler(_) => "Sampler",
+        };
+        write!(f, "{}", dsp_node)
+    }
+}
+
 impl Node for DspNode {
     fn compute_signal(
         &mut self,
@@ -189,8 +205,10 @@ impl Node for DspNode {
 }
 
 pub struct Sampler {
-    sample: WavReader<BufReader<File>>,
-    gain: f32,
+    current_frame: usize,
+    samples: Vec<Frame>,
+    start: usize,
+    end: usize,
 }
 
 impl std::fmt::Debug for Sampler {
@@ -204,7 +222,7 @@ impl std::fmt::Debug for Sampler {
 impl Sampler {
     pub fn new() -> Self {
         let mut sample =
-            WavReader::open("/home/miklos/Documents/audio/samples/chords/lofi_jazz_piano/16.wav")
+            WavReader::open("/home/miklos/Documents/audio/samples/chords/lofi_jazz_piano/5.wav")
                 .expect("File not found!");
 
         // Find the max amplitude of the sample for automatic gain adjustment.
@@ -219,12 +237,34 @@ impl Sampler {
             .unwrap()
             .unwrap();
 
+        let gain = 1.0 / max_amp as f32;
+
         // Reset the sample to the start position.
         sample.seek(0).unwrap();
 
-        let gain = 1.0 / max_amp as f32;
+        // Normalize the samples between 0 and 1.
+        let frames = sample
+            .samples::<i32>()
+            .filter_map(Result::ok)
+            .map(|f| (f as f32).mul_amp(gain));
 
-        Self { sample, gain }
+        // Collect as interleaved frames.
+        let samples = signal::from_interleaved_samples_iter(frames)
+            .until_exhausted()
+            .collect::<Vec<Frame>>();
+
+        // Sample bank should store the raw samples vec.
+
+        let current_frame = 0;
+        let start = 0;
+        let end = sample.len() as usize;
+
+        Self {
+            current_frame,
+            end,
+            samples,
+            start,
+        }
     }
 }
 
@@ -236,26 +276,11 @@ impl Node for Sampler {
         start_frame: usize,
         frames: usize,
     ) -> Vec<Frame> {
-        let gain = self.gain;
-        let samples = self
-            .sample
-            .samples::<i32>()
-            .filter_map(Result::ok)
-            .map(|f| (f as f32).mul_amp(gain));
-
-        let mut sample_frames = signal::from_interleaved_samples_iter(samples).until_exhausted();
-
         let mut out = Vec::new();
 
         for _ in 0..frames {
-            match sample_frames.next() {
-                Some(f) => {
-                    out.push(f);
-                }
-                None => {
-                    out.push(F::equilibrium());
-                }
-            }
+            out.push(self.samples[self.current_frame]);
+            self.current_frame = (self.current_frame + 1) % self.samples.len();
         }
 
         out
