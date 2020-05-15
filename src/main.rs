@@ -4,9 +4,13 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait, StreamIdTrait};
+use cpal::Sample;
+use cpal::{OutputBuffer, StreamData};
 use log::info;
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
+use sample::Frame;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -30,6 +34,7 @@ use crate::ui::{Mode, UiState};
 #[derive(Clone)]
 struct Transport {
     pub frame: usize,
+    pub next_step_frame: usize,
     pub playing: bool,
     pub step: usize,
     pub sequence_length: usize,
@@ -40,6 +45,7 @@ impl Transport {
     fn new() -> Self {
         Self {
             frame: 0,
+            next_step_frame: 0,
             playing: true,
             step: 0,
             sequence_length: 16,
@@ -110,6 +116,43 @@ impl App {
     }
 }
 
+fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>) {
+    let mut app = app.lock().unwrap();
+
+    let initial_frame = app.transport.frame;
+    let frame_count = buffer.len() / 2;
+    let mut next_cycle = app.transport.frame;
+
+    if app.transport.playing {
+        next_cycle += frame_count;
+    } else {
+        app.transport.next_step_frame = 0;
+    }
+
+    while app.transport.frame < next_cycle {
+        if app.transport.frame == app.transport.next_step_frame {
+            // The 4.0 here is the beats-per-bar.
+            app.transport.next_step_frame +=
+                (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
+
+            app.transport.step();
+
+            info!("schedule step here! {}", app.transport.step);
+        }
+
+        app.transport.tick();
+    }
+
+    let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
+
+    if app.transport.playing {
+        let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frame_count);
+        sample::slice::write(buffer, &frames);
+    } else {
+        sample::slice::equilibrium(buffer);
+    }
+}
+
 fn main() -> Result<(), pa::Error> {
     let app = App::new();
 
@@ -117,56 +160,62 @@ fn main() -> Result<(), pa::Error> {
     let pair = Arc::new((Mutex::new(app), Condvar::new()));
 
     let audio_pair = Arc::clone(&pair);
+    let engine_pair = Arc::clone(&pair);
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
 
     // Next step _frame_.
     let mut next_step = 0;
 
-    let callback = move |pa::OutputStreamCallbackArgs { buffer, frames, .. }| {
-        let (app, _trigger) = &*audio_pair;
-        let mut app = app.lock().unwrap();
+    let host = cpal::default_host();
+    let event_loop = host.event_loop();
 
-        let initial_frame = app.transport.frame;
-        let mut next_cycle = app.transport.frame;
+    let device = host
+        .default_output_device()
+        .expect("Could not load device.");
 
-        if app.transport.playing {
-            next_cycle += frames;
-        } else {
-            next_step = 0;
-        }
+    let format = device
+        .default_output_format()
+        .expect("Could not load output format.");
 
-        while app.transport.frame < next_cycle {
-            if app.transport.frame == next_step {
-                // The 4.0 here is the beats-per-bar.
-                next_step += (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
+    let stream = event_loop
+        .build_output_stream(&device, &format)
+        .expect("Could not build output stream.");
 
-                app.transport.step();
+    event_loop
+        .play_stream(stream)
+        .expect("Could not play stream.");
 
-                info!("schedule step here! {}", app.transport.step);
+    // Engine thread.
+    thread::spawn(move || {
+        event_loop.run(move |_stream_id, stream_result| {
+            let stream_data = match stream_result {
+                Ok(data) => data,
+                Err(_) => panic!("Error in event loop!"),
+            };
+
+            let (app, _trigger) = &*pair;
+
+            match stream_data {
+                StreamData::Output {
+                    buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer),
+                } => {
+                    unimplemented!("U16 output buffer not implemented.");
+                }
+                StreamData::Output {
+                    buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer),
+                } => {
+                    unimplemented!("I16 output buffer not implemented.");
+                }
+                StreamData::Output {
+                    buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer),
+                } => {
+                    process_audio(buffer, app);
+                }
+                _ => {}
             }
-
-            app.transport.tick();
-        }
-
-        let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
-
-        if app.transport.playing {
-            let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frames);
-            sample::slice::write(buffer, &frames);
-        } else {
-            sample::slice::equilibrium(buffer);
-        }
-
-        pa::Continue
-    };
-
-    let pa = pa::PortAudio::new()?;
-    let settings =
-        pa.default_output_stream_settings::<Output>(CHANNELS as i32, SAMPLE_HZ, FRAMES)?;
-    let mut stream = pa.open_non_blocking_stream(settings, callback)?;
-    // Audio thread
-    stream.start()?;
+        });
+    });
 
     let stdout = io::stdout().into_raw_mode().unwrap();
     let backend = TermionBackend::new(stdout);
