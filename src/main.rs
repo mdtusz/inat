@@ -48,8 +48,8 @@ impl Transport {
             next_step_frame: 0,
             playing: true,
             step: 0,
-            sequence_length: 16,
-            tempo: 120.0,
+            sequence_length: 64,
+            tempo: 110.0,
         }
     }
 
@@ -104,7 +104,7 @@ impl App {
         graph.connect(s, master, ConnectionKind::Default);
         graph.set_root(master);
 
-        let mut steps = vec![false; 16];
+        let mut steps = vec![false; transport.sequence_length];
 
         Self {
             graph,
@@ -445,6 +445,9 @@ impl Widget for Lane {
             if step_index % 4 == 0 {
                 style = style.fg(Color::Rgb(150, 150, 150));
             }
+            if step_index % 16 == 0 {
+                style = style.fg(Color::Rgb(180, 250, 180));
+            }
 
             if i == middle {
                 style = style.fg(Color::Red);
@@ -457,12 +460,7 @@ impl Widget for Lane {
                 style,
             );
 
-            buffer.set_string(
-                area.x + 3,
-                area.y + i as u16,
-                format!("12 22 -- {:?}", self.0.get(step_index)),
-                style,
-            );
+            buffer.set_string(area.x + 3, area.y + i as u16, "-- -- --", style);
         }
     }
 }
