@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use log::{info, LevelFilter};
+use log::info;
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
@@ -17,7 +17,6 @@ use tui::style::{Color, Style};
 use tui::symbols::{bar, block, line};
 use tui::widgets::{Block, Borders, Paragraph, Sparkline, Text, Widget};
 use tui::Terminal;
-use tui_logger::TuiLoggerWidget;
 
 mod engine;
 mod ui;
@@ -112,9 +111,6 @@ impl App {
 }
 
 fn main() -> Result<(), pa::Error> {
-    tui_logger::init_logger(LevelFilter::Info).unwrap();
-    tui_logger::set_default_level(LevelFilter::Trace);
-
     let app = App::new();
 
     // Prepare graph for concurrency.
