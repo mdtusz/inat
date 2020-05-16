@@ -116,7 +116,6 @@ impl Widget for Transport {
 struct App {
     graph: Graph<DspNode>,
     transport: Transport,
-    samples: HashMap<String, NodeId>,
     ui: UiState,
     steps: Vec<bool>,
 }
@@ -127,19 +126,16 @@ impl App {
         let transport = Transport::new();
         let ui = UiState::new();
 
-        let mut samples = HashMap::new();
-
         let master = graph.add_node(DspNode::Gain(1.0));
         let s = graph.add_node(DspNode::Sampler(Sampler::new()));
 
         graph.connect(s, master, ConnectionKind::Default);
         graph.set_root(master);
 
-        let mut steps = vec![false; transport.sequence_length];
+        let steps = vec![false; transport.sequence_length];
 
         Self {
             graph,
-            samples,
             steps,
             transport,
             ui,
@@ -352,7 +348,6 @@ fn main() -> Result<(), Error> {
 
         let ui = app.ui.clone();
         let transport = app.transport.clone();
-        let samples = app.samples.clone();
         let steps = app.steps.clone();
 
         terminal
@@ -374,7 +369,6 @@ fn main() -> Result<(), Error> {
                     input: ui.input,
                 };
 
-                let graph_nodes = Samples(samples);
                 let lane = Lane(steps, transport.step);
 
                 let lanes = Layout::default()
