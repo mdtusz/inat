@@ -7,6 +7,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 use cpal::{OutputBuffer, StreamData};
 use log::info;
+use midir::{MidiInput, MidiOutput};
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
@@ -197,6 +198,27 @@ fn main() -> Result<(), pa::Error> {
             };
         });
     });
+
+    let midi_out = MidiOutput::new("midi out").expect("Could not construct midi out.");
+    let midi_in = MidiInput::new("midi in").expect("Could not construct midi in.");
+
+    let out_ports = midi_out.ports();
+    let in_ports = midi_in.ports();
+
+    let midi_in = midi_in
+        .connect(
+            &in_ports[0],
+            "tracker internal",
+            |timestamp, midi, _data| {
+                println!("{} {:?}", timestamp, midi);
+            },
+            (),
+        )
+        .unwrap();
+    let mut midi_out = midi_out.connect(&out_ports[0], "tracker internal").unwrap();
+
+    midi_in.close();
+    midi_out.close();
 
     let stdout = io::stdout().into_raw_mode().unwrap();
     let backend = TermionBackend::new(stdout);
