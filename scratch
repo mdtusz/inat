@@ -1,0 +1,37 @@
+Transport
+    playing: boolean
+    tempo: f64
+    step: usize
+    step_size: usize
+
+Focus
+    track: usize
+    lane: usize
+    step: usize
+    jump: usize
+    follow: boolean
+
+Track
+    steps: Vec<Step>
+    volume: f32
+    pan: f32
+    mute: boolean
+
+Step
+    instrument: usize?
+    note: usize?
+
+Tracker
+    tracks: Vec<Track>
+    transport: Transport
+    focus: Focus
+
+Sampler
+    samples: HashMap<SampleId, Sample>
+    gain: f32
+
+Sample:
+    start: usize
+    end: usize
+    loop: Loop
+    frames: Vec<Frame>

@@ -15,14 +15,9 @@ use sample::conv::FromSample;
 use sample::frame::{Frame as F, Stereo};
 use sample::{signal, Sample, Signal};
 
-pub const CHANNELS: usize = 2;
-pub const FRAMES: u32 = 256;
-pub const SAMPLE_HZ: f64 = 44_100.0;
-
 pub type Frequency = f64;
 pub type Phase = f64;
 pub type Gain = f32;
-pub type Output = f32;
 pub type Frame = Stereo<f32>;
 
 pub type NodeId = NodeIndex;
@@ -131,7 +126,7 @@ impl Connection {
     fn new(kind: ConnectionKind) -> Self {
         Self {
             signal: Vec::new(),
-            kind: kind,
+            kind,
         }
     }
 }

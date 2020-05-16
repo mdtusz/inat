@@ -4,11 +4,11 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use anyhow::Error;
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 use cpal::{OutputBuffer, StreamData};
 use log::info;
 use midir::{MidiInput, MidiOutput};
-use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
 use termion::event::Key;
 use termion::input::TermRead;
@@ -75,6 +75,41 @@ impl Transport {
         }
 
         self.step = (self.step + offset as usize) % self.sequence_length;
+    }
+}
+
+impl Widget for Transport {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let ticks = match self.step % 4 {
+            0 => format!("{}   ", bar::FULL),
+            1 => format!("{}{}  ", bar::FULL, bar::FULL),
+            2 => format!("{}{}{} ", bar::FULL, bar::FULL, bar::FULL),
+            3 => format!("{}{}{}{}", bar::FULL, bar::FULL, bar::FULL, bar::FULL),
+            _ => unreachable!(),
+        };
+
+        let play_pause = match self.playing {
+            true => "Playing",
+            false => "Stopped",
+        };
+
+        let style = Style::default();
+        let tick_style = if self.step % 4 == 0 {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        buffer.set_string(area.width - 4, area.y, ticks, tick_style);
+        buffer.set_string(
+            area.x,
+            area.y,
+            format!(
+                "{} T: {:.2} Step: {:2.} Frame: {} Seq: {}",
+                play_pause, self.tempo, self.step, self.frame, self.sequence_length
+            ),
+            style,
+        );
     }
 }
 
@@ -149,7 +184,7 @@ fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>, sr: f64) {
     }
 }
 
-fn main() -> Result<(), pa::Error> {
+fn main() -> Result<(), Error> {
     let app = App::new();
 
     // Prepare graph for concurrency.
@@ -162,21 +197,18 @@ fn main() -> Result<(), pa::Error> {
     let host = cpal::default_host();
     let event_loop = host.event_loop();
 
-    let device = host
-        .default_output_device()
-        .expect("Could not load device.");
+    let device = host.default_output_device().expect("No output device!");
+    let format = device.default_output_format()?;
+    let stream = event_loop.build_output_stream(&device, &format)?;
 
-    let format = device
-        .default_output_format()
-        .expect("Could not load output format.");
+    // Midi
+    let midi_out = MidiOutput::new("midi out").expect("Could not construct midi out.");
+    let midi_in = MidiInput::new("midi in").expect("Could not construct midi in.");
 
-    let stream = event_loop
-        .build_output_stream(&device, &format)
-        .expect("Could not build output stream.");
+    let out_ports = midi_out.ports();
+    let in_ports = midi_in.ports();
 
-    event_loop
-        .play_stream(stream)
-        .expect("Could not play stream.");
+    event_loop.play_stream(stream)?;
 
     let sr = format.sample_rate.0 as f64;
 
@@ -199,12 +231,7 @@ fn main() -> Result<(), pa::Error> {
         });
     });
 
-    let midi_out = MidiOutput::new("midi out").expect("Could not construct midi out.");
-    let midi_in = MidiInput::new("midi in").expect("Could not construct midi in.");
-
-    let out_ports = midi_out.ports();
-    let in_ports = midi_in.ports();
-
+    let midi_out = midi_out.connect(&out_ports[0], "tracker internal").unwrap();
     let midi_in = midi_in
         .connect(
             &in_ports[0],
@@ -215,7 +242,6 @@ fn main() -> Result<(), pa::Error> {
             (),
         )
         .unwrap();
-    let mut midi_out = midi_out.connect(&out_ports[0], "tracker internal").unwrap();
 
     midi_in.close();
     midi_out.close();
@@ -329,9 +355,6 @@ fn main() -> Result<(), pa::Error> {
         let samples = app.samples.clone();
         let steps = app.steps.clone();
 
-        // Drop the app reference so the audio thread can acquire a lock more quickly.
-        drop(app);
-
         terminal
             .draw(|mut f| {
                 let chunks = Layout::default()
@@ -402,7 +425,7 @@ impl Widget for CommandLine {
         let (text, style) = match self.mode {
             Mode::Command => {
                 let text = format!(":{}", self.input);
-                (text, default.bg(Color::Rgb(50, 50, 100)).fg(Color::White))
+                (text, default.bg(Color::Rgb(20, 80, 120)).fg(Color::White))
             }
             Mode::Insert => (
                 "insert".to_string(),
@@ -473,40 +496,5 @@ impl Widget for Samples {
             buffer.set_string(area.x, line_number, format!("{}: {:?}", n.0, n.1), style);
             line_number += 1;
         });
-    }
-}
-
-impl Widget for Transport {
-    fn render(self, area: Rect, buffer: &mut Buffer) {
-        let ticks = match self.step % 4 {
-            0 => format!("{}   ", bar::FULL),
-            1 => format!("{}{}  ", bar::FULL, bar::FULL),
-            2 => format!("{}{}{} ", bar::FULL, bar::FULL, bar::FULL),
-            3 => format!("{}{}{}{}", bar::FULL, bar::FULL, bar::FULL, bar::FULL),
-            _ => unreachable!(),
-        };
-
-        let play_pause = match self.playing {
-            true => "Playing",
-            false => "Stopped",
-        };
-
-        let style = Style::default();
-        let tick_style = if self.step % 4 == 0 {
-            Style::default().fg(Color::Blue)
-        } else {
-            Style::default().fg(Color::Green)
-        };
-
-        buffer.set_string(area.width - 4, area.y, ticks, tick_style);
-        buffer.set_string(
-            area.x,
-            area.y,
-            format!(
-                "{} T: {:.2} Step: {:2.} Frame: {} Seq: {}",
-                play_pause, self.tempo, self.step, self.frame, self.sequence_length
-            ),
-            style,
-        );
     }
 }
