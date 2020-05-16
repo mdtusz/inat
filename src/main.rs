@@ -4,13 +4,11 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait, StreamIdTrait};
-use cpal::Sample;
+use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 use cpal::{OutputBuffer, StreamData};
 use log::info;
 use portaudio as pa;
 use sample::conv::ToFrameSliceMut;
-use sample::Frame;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -25,10 +23,7 @@ use tui::Terminal;
 mod engine;
 mod ui;
 
-use crate::engine::{
-    ConnectionKind, DspNode, Frame as F, Graph, NodeId, Output, Sampler, CHANNELS, FRAMES,
-    SAMPLE_HZ,
-};
+use crate::engine::{ConnectionKind, DspNode, Frame as F, Graph, NodeId, Sampler};
 use crate::ui::{Mode, UiState};
 
 #[derive(Clone)]
@@ -108,15 +103,15 @@ impl App {
 
         Self {
             graph,
-            transport,
             samples,
-            ui,
             steps,
+            transport,
+            ui,
         }
     }
 }
 
-fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>) {
+fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>, sr: f64) {
     let mut app = app.lock().unwrap();
 
     let initial_frame = app.transport.frame;
@@ -133,7 +128,7 @@ fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>) {
         if app.transport.frame == app.transport.next_step_frame {
             // The 4.0 here is the beats-per-bar.
             app.transport.next_step_frame +=
-                (SAMPLE_HZ / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
+                (sr / (app.transport.tempo * 4.0 / 60.0)).round() as usize;
 
             app.transport.step();
 
@@ -146,7 +141,7 @@ fn process_audio(mut buffer: OutputBuffer<f32>, app: &Mutex<App>) {
     let buffer: &mut [F] = buffer.to_frame_slice_mut().unwrap();
 
     if app.transport.playing {
-        let frames = app.graph.compute(SAMPLE_HZ, initial_frame, frame_count);
+        let frames = app.graph.compute(sr, initial_frame, frame_count);
         sample::slice::write(buffer, &frames);
     } else {
         sample::slice::equilibrium(buffer);
@@ -159,13 +154,9 @@ fn main() -> Result<(), pa::Error> {
     // Prepare graph for concurrency.
     let pair = Arc::new((Mutex::new(app), Condvar::new()));
 
-    let audio_pair = Arc::clone(&pair);
     let engine_pair = Arc::clone(&pair);
     let ui_pair = Arc::clone(&pair);
     let input_pair = Arc::clone(&pair);
-
-    // Next step _frame_.
-    let mut next_step = 0;
 
     let host = cpal::default_host();
     let event_loop = host.event_loop();
@@ -186,6 +177,8 @@ fn main() -> Result<(), pa::Error> {
         .play_stream(stream)
         .expect("Could not play stream.");
 
+    let sr = format.sample_rate.0 as f64;
+
     // Engine thread.
     thread::spawn(move || {
         event_loop.run(move |_stream_id, stream_result| {
@@ -194,26 +187,14 @@ fn main() -> Result<(), pa::Error> {
                 Err(_) => panic!("Error in event loop!"),
             };
 
-            let (app, _trigger) = &*pair;
+            let (app, _trigger) = &*engine_pair;
 
             match stream_data {
                 StreamData::Output {
-                    buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer),
-                } => {
-                    unimplemented!("U16 output buffer not implemented.");
-                }
-                StreamData::Output {
-                    buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer),
-                } => {
-                    unimplemented!("I16 output buffer not implemented.");
-                }
-                StreamData::Output {
-                    buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer),
-                } => {
-                    process_audio(buffer, app);
-                }
-                _ => {}
-            }
+                    buffer: cpal::UnknownTypeOutputBuffer::F32(buffer),
+                } => process_audio(buffer, app, sr),
+                _ => panic!("Audio output not implemented for this format."),
+            };
         });
     });
 
@@ -263,12 +244,6 @@ fn main() -> Result<(), pa::Error> {
                         if app.ui.input == "q" {
                             terminal.clear().unwrap();
                             break;
-                        }
-
-                        if app.ui.input == "tempo" {
-                            app.ui.input = format!("{}", app.transport.tempo);
-                            app.ui.mode = Mode::Normal;
-                            continue;
                         }
 
                         terminal.hide_cursor().unwrap();
