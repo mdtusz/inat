@@ -26,7 +26,7 @@ mod engine;
 
 use crate::engine::{ConnectionKind, DspNode, Graph, NodeId};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
     Command,
     Insert,
@@ -490,7 +490,7 @@ fn main() -> Result<(), Error> {
 
         system = result.0;
 
-        if let Mode::Shutdown = system.mode {
+        if system.mode == Mode::Shutdown {
             terminal.clear();
             terminal.show_cursor();
             break;
