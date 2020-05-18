@@ -1,10 +1,6 @@
-use log::info;
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
 use std::fmt;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::PathBuf;
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Topo;
@@ -30,7 +26,7 @@ pub struct Graph<N: Node> {
     /// The root directed graph tree.
     ///
     /// TODO: This should not be public.
-    pub graph: DiGraph<N, Connection>,
+    graph: DiGraph<N, Connection>,
 
     /// The graph root index where final audio will be sourced from.
     /// This should be a master gain node.
