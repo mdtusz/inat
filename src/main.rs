@@ -48,6 +48,51 @@ impl fmt::Display for Mode {
 #[derive(Clone, Debug)]
 enum Message {
     NoteOn(u8, u8),
+    CC(u8),
+}
+
+#[derive(Clone, Debug)]
+enum Channel {
+    Ch1,
+    Ch2,
+    Ch3,
+    Ch4,
+    Ch5,
+    Ch6,
+    Ch7,
+    Ch8,
+    Ch9,
+    Ch10,
+    Ch11,
+    Ch12,
+    Ch13,
+    Ch14,
+    Ch15,
+    Ch16,
+}
+
+impl Into<Channel> for usize {
+    fn into(self) -> Channel {
+        match self {
+            0 => Channel::Ch1,
+            1 => Channel::Ch2,
+            2 => Channel::Ch3,
+            3 => Channel::Ch4,
+            4 => Channel::Ch5,
+            5 => Channel::Ch6,
+            6 => Channel::Ch7,
+            7 => Channel::Ch8,
+            8 => Channel::Ch9,
+            9 => Channel::Ch10,
+            10 => Channel::Ch11,
+            11 => Channel::Ch12,
+            12 => Channel::Ch13,
+            13 => Channel::Ch14,
+            14 => Channel::Ch15,
+            15 => Channel::Ch16,
+            _ => panic!("Invalid channel!"),
+        }
+    }
 }
 
 impl Transport {
@@ -128,7 +173,7 @@ impl Widget for Transport {
 
 struct Track {
     gain: NodeId,
-    steps: Vec<Step>,
+    steps: Vec<Option<Step>>,
 }
 
 #[derive(Clone)]
@@ -143,16 +188,13 @@ struct Transport {
 
 #[derive(Clone)]
 struct Step {
-    instrument: Option<Message>,
-    note: Option<Message>,
+    instrument: u8,
+    note: u8,
 }
 
-impl Default for Step {
-    fn default() -> Self {
-        Self {
-            instrument: None,
-            note: None,
-        }
+impl Step {
+    fn new(instrument: u8, note: u8) -> Self {
+        Self { instrument, note }
     }
 }
 
@@ -161,39 +203,10 @@ struct Sample {
     end: usize,
 }
 
-struct Focus {
-    track: usize,
-    step: usize,
-    jump: usize,
-    follow: bool,
-}
-
-impl Default for Focus {
-    fn default() -> Self {
-        Self {
-            track: 0,
-            step: 0,
-            jump: 1,
-            follow: true,
-        }
-    }
-}
-
-struct Input {}
-
-impl Input {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
 struct System {
     graph: Graph<DspNode>,
     cmd: String,
-    focus: Focus,
-    input: Input,
-    instruments: HashMap<String, NodeId>,
-    midi_buffer: HashMap<usize, Message>,
+    midi_buffer: HashMap<usize, Vec<(Channel, Message)>>,
     mode: Mode,
     tracks: Vec<Track>,
     transport: Transport,
@@ -210,29 +223,21 @@ impl System {
 
         let audio_frame = 0;
         let cmd = String::new();
-        let focus = Focus::default();
-        let input = Input::new();
-        let instruments = HashMap::new();
         let midi_buffer = HashMap::new();
         let mode = Mode::Normal;
         let transport = Transport::new();
 
         for _ in 0..8 {
+            let steps = vec![None; 64];
             let gain = graph.add_node(DspNode::Gain(1.0));
             graph.connect(gain, master, ConnectionKind::Default);
-
-            let steps = vec![Step::default(); 64];
-
             tracks.push(Track { gain, steps });
         }
 
         Self {
             audio_frame,
             cmd,
-            focus,
             graph,
-            input,
-            instruments,
             midi_buffer,
             mode,
             tracks,
@@ -274,6 +279,14 @@ impl System {
                     self.cmd = String::new();
                     self.mode = Mode::Normal;
                 }
+                Key::Char('a') => {
+                    let note_on = Message::NoteOn(65, 127);
+                    let note_off = Message::NoteOn(0, 0);
+                    self.midi_buffer
+                        .insert(self.transport.frame, vec![(Channel::Ch1, note_on)]);
+                    self.midi_buffer
+                        .insert(self.transport.frame + 100, vec![(Channel::Ch1, note_off)]);
+                }
                 _ => {
                     info!("Unhandled key event: {:?}", key);
                 }
@@ -301,10 +314,25 @@ impl System {
         let latency = 1024;
 
         while self.audio_frame + latency > self.transport.frame {
-            let msg = Message::NoteOn(0, 0);
-
             if self.transport.playing && self.transport.on_step() {
-                self.midi_buffer.insert(self.transport.frame, msg);
+                let mut messages = Vec::new();
+
+                self.tracks.iter().enumerate().for_each(|(i, t)| {
+                    let channel: Channel = i.into();
+
+                    match &t.steps[self.transport.step] {
+                        Some(step) => {
+                            messages.push((channel.clone(), Message::CC(step.instrument)));
+                            messages.push((channel.clone(), Message::NoteOn(step.note, 127)));
+                        }
+                        None => {}
+                    };
+                });
+
+                if !messages.is_empty() {
+                    self.midi_buffer.insert(self.transport.frame, messages);
+                }
+
                 self.transport.step()
             }
 
@@ -357,20 +385,20 @@ fn main() -> Result<(), Error> {
 
             let initial_frame = system.audio_frame;
 
-            let frames = system.graph.compute(sr, initial_frame, frame_count);
-            sample::slice::write(buffer, &frames);
-
             for i in 0..frame_count {
                 let idx = initial_frame + i;
                 match system.midi_buffer.remove(&idx) {
                     Some(msg) => {
-                        // println!("Hit! {} {:?}", idx, msg),
+                        println!("Hit! {} {:?}", idx, msg);
                     }
                     None => {
                         // println!("Miss! ({:?})", idx)
                     }
                 };
             }
+
+            let frames = system.graph.compute(sr, initial_frame, frame_count);
+            sample::slice::write(buffer, &frames);
 
             system.audio_frame += frame_count;
         });
