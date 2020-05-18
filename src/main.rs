@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Error;
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
-use cpal::{OutputBuffer, StreamData};
+use cpal::StreamData;
 use log::info;
 use midir::{MidiInput, MidiOutput};
 use sample::conv::ToFrameSliceMut;
