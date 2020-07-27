@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
@@ -8,9 +9,12 @@ use std::time::{Duration, Instant};
 use anyhow::Error;
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 use cpal::StreamData;
+use hound::WavReader;
 use log::info;
 use midir::{MidiInput, MidiOutput};
-use sample::conv::ToFrameSliceMut;
+use sample::conv::{FromSample, ToFrameSliceMut};
+use sample::frame::{Frame, Stereo};
+use sample::{signal, Sample, Signal};
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -19,12 +23,8 @@ use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::symbols::{bar, block, line};
-use tui::widgets::{Block, Borders, Paragraph, Sparkline, Text, Widget};
+use tui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Text, Widget};
 use tui::Terminal;
-
-mod engine;
-
-use crate::engine::{ConnectionKind, DspNode, Graph, NodeId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
@@ -49,50 +49,7 @@ impl fmt::Display for Mode {
 enum Message {
     NoteOn(u8, u8),
     CC(u8),
-}
-
-#[derive(Clone, Debug)]
-enum Channel {
-    Ch1,
-    Ch2,
-    Ch3,
-    Ch4,
-    Ch5,
-    Ch6,
-    Ch7,
-    Ch8,
-    Ch9,
-    Ch10,
-    Ch11,
-    Ch12,
-    Ch13,
-    Ch14,
-    Ch15,
-    Ch16,
-}
-
-impl Into<Channel> for usize {
-    fn into(self) -> Channel {
-        match self {
-            0 => Channel::Ch1,
-            1 => Channel::Ch2,
-            2 => Channel::Ch3,
-            3 => Channel::Ch4,
-            4 => Channel::Ch5,
-            5 => Channel::Ch6,
-            6 => Channel::Ch7,
-            7 => Channel::Ch8,
-            8 => Channel::Ch9,
-            9 => Channel::Ch10,
-            10 => Channel::Ch11,
-            11 => Channel::Ch12,
-            12 => Channel::Ch13,
-            13 => Channel::Ch14,
-            14 => Channel::Ch15,
-            15 => Channel::Ch16,
-            _ => panic!("Invalid channel!"),
-        }
-    }
+    ProgramChange(u8),
 }
 
 impl Transport {
@@ -171,9 +128,60 @@ impl Widget for Transport {
     }
 }
 
+struct Focus {
+    track: usize,
+    step: usize,
+}
+
+impl Default for Focus {
+    fn default() -> Self {
+        Self { track: 0, step: 0 }
+    }
+}
+
 struct Track {
-    gain: NodeId,
     steps: Vec<Option<Step>>,
+    voice: Voice,
+    vu: f32,
+}
+
+struct Voice {
+    sample: Option<u8>,
+    offset: usize,
+    playing: bool,
+}
+
+impl Voice {
+    fn note_on(&mut self) {
+        self.offset = 0;
+        self.playing = true;
+    }
+
+    fn note_off(&mut self) {
+        self.playing = false;
+    }
+
+    fn get_frame(&mut self, samples: &HashMap<u8, SampleClip>) -> Stereo<f32> {
+        if !self.playing {
+            return Frame::equilibrium();
+        }
+
+        let frame = match self.sample {
+            Some(sample) => {
+                let sample = samples
+                    .get(&sample)
+                    .expect(&format!("No sample with address {}", sample));
+                let frame = sample.get_frame(self.offset);
+
+                frame
+            }
+            None => Frame::equilibrium(),
+        };
+
+        self.offset += 1;
+
+        frame
+    }
 }
 
 #[derive(Clone)]
@@ -186,7 +194,7 @@ struct Transport {
     tempo: f64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Step {
     instrument: u8,
     note: u8,
@@ -198,48 +206,122 @@ impl Step {
     }
 }
 
-struct Sample {
+struct SampleClip {
+    samples: Vec<Stereo<f32>>,
     start: usize,
     end: usize,
 }
 
+impl SampleClip {
+    fn new(path: &str) -> Self {
+        let mut sample = WavReader::open(path).expect("File not found!");
+
+        // Find the max amplitude of the sample for automatic gain adjustment.
+        let max_amp = sample
+            .samples::<i32>()
+            .max_by(|a, b| {
+                a.as_ref()
+                    .unwrap_or(&0)
+                    .abs()
+                    .cmp(&b.as_ref().unwrap_or(&0).abs())
+            })
+            .unwrap()
+            .unwrap();
+
+        let gain = 1.0 / max_amp as f32;
+
+        // Reset the sample to the start position.
+        sample.seek(0).expect("Could not start sample at zero.");
+
+        // Normalize the samples between 0 and 1.
+        let frames = sample
+            .samples::<i32>()
+            .filter_map(Result::ok)
+            .map(|f| (f as f32).mul_amp(gain));
+
+        // Collect as interleaved frames.
+        let samples = signal::from_interleaved_samples_iter(frames)
+            .until_exhausted()
+            .collect::<Vec<Stereo<f32>>>();
+
+        let start = 0;
+        let end = sample.len() as usize;
+
+        Self {
+            end: 21000,
+            samples,
+            start,
+        }
+    }
+
+    fn get_frame(&self, offset: usize) -> Stereo<f32> {
+        let idx = self.start + offset;
+
+        if idx >= self.end {
+            Frame::equilibrium()
+        } else {
+            *self.samples.get(idx).unwrap_or(&Frame::equilibrium())
+        }
+    }
+}
+
 struct System {
-    graph: Graph<DspNode>,
     cmd: String,
-    midi_buffer: HashMap<usize, Vec<(Channel, Message)>>,
+    midi_buffer: HashMap<usize, Vec<(u8, Message)>>,
     mode: Mode,
     tracks: Vec<Track>,
+    samples: HashMap<u8, SampleClip>,
     transport: Transport,
     audio_frame: usize,
+    focus: Focus,
 }
 
 impl System {
     fn new() -> Self {
-        let mut graph = Graph::new();
-        let mut tracks = Vec::new();
-
-        let master = graph.add_node(DspNode::Gain(1.0));
-        graph.set_root(master);
-
         let audio_frame = 0;
         let cmd = String::new();
+        let focus = Focus::default();
         let midi_buffer = HashMap::new();
         let mode = Mode::Normal;
         let transport = Transport::new();
 
-        for _ in 0..8 {
+        let mut tracks = Vec::new();
+        let mut samples = HashMap::new();
+
+        // Construct tracks.
+        for i in 0..8 {
             let steps = vec![None; 64];
-            let gain = graph.add_node(DspNode::Gain(1.0));
-            graph.connect(gain, master, ConnectionKind::Default);
-            tracks.push(Track { gain, steps });
+
+            let voice = Voice {
+                sample: Some(i + 1),
+                offset: 0,
+                playing: false,
+            };
+
+            tracks.push(Track {
+                steps,
+                voice,
+                vu: 0.0,
+            });
+        }
+
+        // Create 10 dummy samples.
+        for i in 1..=10 {
+            let path = format!(
+                "/home/miklos/Documents/audio/samples/chords/lofi_jazz_piano/{}.wav",
+                i
+            );
+            let clip = SampleClip::new(&path);
+            samples.insert(i, clip);
         }
 
         Self {
             audio_frame,
             cmd,
-            graph,
+            focus,
             midi_buffer,
             mode,
+            samples,
             tracks,
             transport,
         }
@@ -280,12 +362,14 @@ impl System {
                     self.mode = Mode::Normal;
                 }
                 Key::Char('a') => {
-                    let note_on = Message::NoteOn(65, 127);
-                    let note_off = Message::NoteOn(0, 0);
-                    self.midi_buffer
-                        .insert(self.transport.frame, vec![(Channel::Ch1, note_on)]);
-                    self.midi_buffer
-                        .insert(self.transport.frame + 100, vec![(Channel::Ch1, note_off)]);
+                    self.midi_buffer.insert(
+                        self.transport.frame,
+                        vec![(self.focus.track as u8, Message::NoteOn(0, 127))],
+                    );
+                    self.midi_buffer.insert(
+                        self.transport.frame + 100,
+                        vec![(self.focus.track as u8, Message::NoteOn(0, 0))],
+                    );
                 }
                 _ => {
                     info!("Unhandled key event: {:?}", key);
@@ -295,12 +379,40 @@ impl System {
                 Key::Char(' ') => {
                     self.transport.play_pause();
                 }
+                Key::Char('h') => {
+                    let track_count = self.tracks.len();
+                    self.focus.track = (self.focus.track + track_count - 1) % track_count;
+                }
+                Key::Char('j') => {
+                    let step_count = self.tracks[self.focus.track].steps.len();
+                    self.focus.step = (self.focus.step + 1) % step_count;
+                }
+                Key::Char('k') => {
+                    let step_count = self.tracks[self.focus.track].steps.len();
+                    self.focus.step = (self.focus.step + step_count - 1) % step_count;
+                }
+                Key::Char('l') => {
+                    self.focus.track = (self.focus.track + 1) % self.tracks.len();
+                }
                 Key::Char('i') => {
                     self.mode = Mode::Insert;
                 }
                 Key::Char(':') => {
                     self.cmd = String::new();
                     self.mode = Mode::Command;
+                }
+                Key::Char('\n') => {
+                    self.tracks[self.focus.track].steps[self.focus.step] = Some(Step {
+                        instrument: 0,
+                        note: 0,
+                    });
+                    let step_count = self.tracks[self.focus.track].steps.len();
+                    self.focus.step = (self.focus.step + 4) % step_count;
+                }
+                Key::Backspace => {
+                    self.tracks[self.focus.track].steps[self.focus.step] = None;
+                    let step_count = self.tracks[self.focus.track].steps.len();
+                    self.focus.step = (self.focus.step + step_count - 4) % step_count;
                 }
                 _ => {
                     info!("Unhandled key event: {:?}", key);
@@ -310,20 +422,19 @@ impl System {
         };
     }
 
+    /// Schedules upcoming midi in a buffer to be consumed by the audio callback loop.
     fn buffer_midi(&mut self) {
-        let latency = 1024;
+        let latency = 2048;
 
-        while self.audio_frame + latency > self.transport.frame {
+        while self.audio_frame + latency >= self.transport.frame {
             if self.transport.playing && self.transport.on_step() {
                 let mut messages = Vec::new();
 
-                self.tracks.iter().enumerate().for_each(|(i, t)| {
-                    let channel: Channel = i.into();
-
-                    match &t.steps[self.transport.step] {
+                self.tracks.iter().enumerate().for_each(|(ch, track)| {
+                    match &track.steps[self.transport.step] {
                         Some(step) => {
-                            messages.push((channel.clone(), Message::CC(step.instrument)));
-                            messages.push((channel.clone(), Message::NoteOn(step.note, 127)));
+                            messages.push((ch as u8, Message::ProgramChange(step.instrument)));
+                            messages.push((ch as u8, Message::NoteOn(step.note, 127)));
                         }
                         None => {}
                     };
@@ -338,6 +449,45 @@ impl System {
 
             self.transport.frame += 1;
         }
+    }
+
+    /// Computes audio frames for the engine callback to fill the stream.
+    fn compute_frames(&mut self, count: usize) -> Vec<Stereo<f32>> {
+        let mut frames = Vec::new();
+
+        for i in 0..count {
+            let offset = self.audio_frame + i;
+
+            // Apply the midi for the current frame.
+            match self.midi_buffer.remove(&offset) {
+                Some(messages) => {
+                    for message in messages {
+                        match message {
+                            (ch, Message::CC(cc)) => {}
+                            (ch, Message::NoteOn(note, vel)) => {
+                                self.tracks[ch as usize].voice.note_on();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                None => {}
+            };
+
+            let mut frame: Stereo<f32> = Frame::equilibrium();
+
+            // Compute the audio for each track.
+            for track in self.tracks.iter_mut() {
+                let track_frame = track.voice.get_frame(&self.samples);
+                track.vu = (((track_frame[0] + track_frame[1]) / 2.0).abs() + track.vu) / 2.0;
+                frame = frame.add_amp(track_frame);
+            }
+
+            // frame = frame.scale_amp(1.0 / self.tracks.len() as f32);
+            frames.push(frame);
+        }
+
+        frames
     }
 }
 
@@ -364,10 +514,6 @@ fn main() -> Result<(), Error> {
 
     // Engine thread.
     thread::spawn(move || {
-        // Monotonically increasing frame count. Risk of overflow is essentially zero, unless the
-        // program runs for literally years.
-        let sr = format.sample_rate.0 as f64;
-
         event_loop.run(move |_stream_id, stream_result| {
             let stream_data = stream_result.expect("No stream data!");
             let mut buffer = match stream_data {
@@ -378,26 +524,16 @@ fn main() -> Result<(), Error> {
             };
 
             let frame_count = buffer.len() / format.channels as usize;
-            let buffer = buffer.to_frame_slice_mut().unwrap();
+            let buffer = buffer
+                .to_frame_slice_mut()
+                .expect("Could not create frame slice!");
 
             let (system, _trigger) = &*engine_pair;
-            let mut system = system.lock().unwrap();
+            let mut system = system
+                .lock()
+                .expect("Could not lock system for audio thread!");
 
-            let initial_frame = system.audio_frame;
-
-            for i in 0..frame_count {
-                let idx = initial_frame + i;
-                match system.midi_buffer.remove(&idx) {
-                    Some(msg) => {
-                        println!("Hit! {} {:?}", idx, msg);
-                    }
-                    None => {
-                        // println!("Miss! ({:?})", idx)
-                    }
-                };
-            }
-
-            let frames = system.graph.compute(sr, initial_frame, frame_count);
+            let frames = system.compute_frames(frame_count);
             sample::slice::write(buffer, &frames);
 
             system.audio_frame += frame_count;
@@ -449,7 +585,7 @@ fn main() -> Result<(), Error> {
         let mut system = system.lock().unwrap();
         let result = trigger
             .wait_timeout(system, Duration::from_millis(16))
-            .unwrap();
+            .expect("Could not get trigger result!");
 
         system = result.0;
 
@@ -528,7 +664,16 @@ fn main() -> Result<(), Error> {
                     .split(chunks[0]);
 
                 for (i, t) in system.tracks.iter().enumerate() {
-                    let track = TrackUI(t, system.transport.step);
+                    let mut track = TrackUI {
+                        track: t,
+                        current: system.transport.step,
+                        focus: None,
+                    };
+
+                    if system.focus.track == i {
+                        track.focus = Some(system.focus.step);
+                    }
+
                     f.render_widget(track, tracks[i]);
                 }
 
@@ -543,7 +688,11 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-struct TrackUI<'a>(&'a Track, usize);
+struct TrackUI<'a> {
+    track: &'a Track,
+    current: usize,
+    focus: Option<usize>,
+}
 
 impl<'a> Widget for TrackUI<'a> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
@@ -556,12 +705,12 @@ impl<'a> Widget for TrackUI<'a> {
         let bottom = split[1];
 
         let middle = (top.height / 2) - 1;
-        let steps = self.0.steps.len();
+        let steps = self.track.steps.len();
 
         for i in 0..top.height {
             let mut style = Style::default();
 
-            let step_index = match (self.1 + i as usize).checked_sub(middle as usize) {
+            let step_index = match (self.current + i as usize).checked_sub(middle as usize) {
                 Some(v) => v as usize,
                 None => continue,
             };
@@ -570,27 +719,69 @@ impl<'a> Widget for TrackUI<'a> {
                 continue;
             }
 
+            // Highlight each beat.
             if step_index % 4 == 0 {
                 style = style.fg(Color::Rgb(150, 150, 150));
             }
+
+            // Highlight each bar.
             if step_index % 16 == 0 {
                 style = style.fg(Color::Rgb(180, 250, 180));
             }
 
+            // Highlight current step.
             if i == middle {
                 style = style.fg(Color::Red);
             }
 
+            // Highlight focussed step.
+            if let Some(focus) = self.focus {
+                if step_index == focus {
+                    style = style.fg(Color::Black).bg(Color::Red);
+                }
+            }
+
+            // Step number.
             buffer.set_string(top.x, top.y + i as u16, format!("{:2.}", step_index), style);
-            buffer.set_string(top.x + 3, top.y + i as u16, "-- -- --", style);
+
+            // Step data.
+            let step = &self.track.steps[step_index];
+            let text = match step {
+                Some(s) => format!("{:02} {:02} --", s.instrument, s.note),
+                None => "-- -- --".to_string(),
+            };
+            buffer.set_string(top.x + 3, top.y + i as u16, text, style);
         }
+
+        let c = (self.track.vu * 255.0 * 2.0) as u8;
+        let gain_color = Color::Rgb(c, 140, 140);
+
+        let gain_gauge = Gauge::default()
+            .percent((self.track.vu * 100.0) as u16)
+            .label("Gain")
+            .style(Style::default().fg(gain_color));
+
+        gain_gauge.render(Rect::new(bottom.x, bottom.y, bottom.width, 1), buffer);
 
         buffer.set_string(
             bottom.x,
             bottom.y + 1,
-            format!("{:?}", self.0.gain),
-            Style::default(),
+            format!("{}", self.track.vu),
+            Style::default().fg(gain_color),
         );
+    }
+}
+
+/// VuMeter that displays a value from 0 to 1.
+struct VuMeter(f32);
+
+impl Widget for VuMeter {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let c = (self.0 * 255.0 * 2.0) as u8;
+        let color = Color::Rgb(c, 100, 100);
+        let style = Style::default().fg(color);
+        let text = format!("{}", self.0);
+        buffer.set_string(area.x, area.y, text, style);
     }
 }
 
@@ -623,19 +814,5 @@ impl Widget for CommandLine {
 
         buffer.set_background(area, style.bg);
         buffer.set_string(area.x, area.y, text, style);
-    }
-}
-
-struct Samples(HashMap<String, NodeId>);
-
-impl Widget for Samples {
-    fn render(self, area: Rect, buffer: &mut Buffer) {
-        let mut line_number = area.y;
-        let style = Style::default();
-
-        self.0.iter().for_each(|n| {
-            buffer.set_string(area.x, line_number, format!("{}: {:?}", n.0, n.1), style);
-            line_number += 1;
-        });
     }
 }
