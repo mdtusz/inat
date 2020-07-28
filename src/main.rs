@@ -289,14 +289,14 @@ impl SampleClip {
 }
 
 struct System {
+    audio_frame: usize,
     cmd: String,
+    focus: Focus,
     midi_buffer: HashMap<usize, Vec<(u8, Message)>>,
     mode: Mode,
-    tracks: Vec<Track>,
     samples: HashMap<u8, SampleClip>,
+    tracks: Vec<Track>,
     transport: Transport,
-    audio_frame: usize,
-    focus: Focus,
 }
 
 impl System {
