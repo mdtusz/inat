@@ -23,7 +23,7 @@ use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::symbols::{bar, block, line};
-use tui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Text, Widget};
+use tui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Widget};
 use tui::Terminal;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -812,7 +812,7 @@ impl Widget for CommandLine {
             ),
         };
 
-        buffer.set_background(area, style.bg);
+        buffer.set_style(area, style);
         buffer.set_string(area.x, area.y, text, style);
     }
 }
