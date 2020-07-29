@@ -23,29 +23,76 @@ use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::symbols::{bar, block, line};
+use tui::text::{Span, Spans};
 use tui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Widget};
 use tui::Terminal;
 
-pub struct TabsState<'a> {
-    pub titles: Vec<&'a str>,
+#[derive(Clone, Debug, PartialEq)]
+pub enum View {
+    Tracker,
+    Samples,
+}
+
+impl fmt::Display for View {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            View::Tracker => "Tracker",
+            View::Samples => "Samples",
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewState {
+    pub views: Vec<View>,
     pub index: usize,
 }
 
-impl<'a> TabsState<'a> {
-    pub fn new(titles: Vec<&'a str>) -> Self {
-        Self { titles, index: 0 }
+impl ViewState {
+    pub fn new(views: Vec<View>) -> Self {
+        Self { views, index: 0 }
     }
 
     pub fn next(&mut self) {
-        self.index = (self.index + 1) % self.titles.len();
+        self.index = (self.index + 1) % self.views.len();
     }
 
     pub fn prev(&mut self) {
         if self.index > 0 {
             self.index = self.index - 1;
         } else {
-            self.index = self.titles.len() - 1;
+            self.index = self.views.len() - 1;
         }
+    }
+}
+
+impl Widget for ViewState {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let mut length: u16 = 0;
+
+        let tabs: Vec<Span> = self
+            .views
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let s = format!(" {} ", v);
+                let mut style = Style::default().fg(Color::LightBlue);
+
+                if i == self.index {
+                    style = style.fg(Color::Black).bg(Color::White);
+                }
+
+                length = length + s.len() as u16;
+
+                Span::styled(s, style)
+            })
+            .collect();
+
+        let spans = &Spans::from(tabs);
+
+        buffer.set_spans(area.x, area.y, spans, length);
     }
 }
 
@@ -297,6 +344,7 @@ struct System {
     samples: HashMap<u8, SampleClip>,
     tracks: Vec<Track>,
     transport: Transport,
+    views: ViewState,
 }
 
 impl System {
@@ -338,6 +386,8 @@ impl System {
             samples.insert(i, clip);
         }
 
+        let views = ViewState::new(vec![View::Tracker, View::Samples]);
+
         Self {
             audio_frame,
             cmd,
@@ -347,6 +397,7 @@ impl System {
             samples,
             tracks,
             transport,
+            views,
         }
     }
 
@@ -661,6 +712,7 @@ fn main() -> Result<(), Error> {
                     .direction(Direction::Vertical)
                     .constraints(
                         [
+                            Constraint::Length(1),
                             Constraint::Min(0),
                             Constraint::Length(1),
                             Constraint::Length(1),
@@ -684,7 +736,7 @@ fn main() -> Result<(), Error> {
                 let tracks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints(track_constraint)
-                    .split(chunks[0]);
+                    .split(chunks[1]);
 
                 for (i, t) in system.tracks.iter().enumerate() {
                     let mut track = TrackUI {
@@ -700,8 +752,9 @@ fn main() -> Result<(), Error> {
                     f.render_widget(track, tracks[i]);
                 }
 
-                f.render_widget(system.transport.clone(), chunks[1]);
-                f.render_widget(command_line, chunks[2]);
+                f.render_widget(system.views.clone(), chunks[0]);
+                f.render_widget(system.transport.clone(), chunks[2]);
+                f.render_widget(command_line, chunks[3]);
             })
             .unwrap();
 
@@ -801,7 +854,7 @@ struct VuMeter(f32);
 impl Widget for VuMeter {
     fn render(self, area: Rect, buffer: &mut Buffer) {
         let c = (self.0 * 255.0 * 2.0) as u8;
-        let color = Color::Rgb(c, 100, 100);
+        let color = Color::Rgb(c, 160, 160);
         let style = Style::default().fg(color);
         let text = format!("{}", self.0);
         buffer.set_string(area.x, area.y, text, style);
