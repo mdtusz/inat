@@ -348,7 +348,7 @@ struct System {
     samples: HashMap<u8, SampleClip>,
     tracks: Vec<Track>,
     transport: Transport,
-    views: ViewState,
+    view_state: ViewState,
 }
 
 impl System {
@@ -391,7 +391,7 @@ impl System {
         }
 
         // Initialize the two default views.
-        let views = ViewState::new(vec![View::Tracker, View::Samples]);
+        let view_state = ViewState::new(vec![View::Tracker, View::Samples]);
 
         Self {
             audio_frame,
@@ -402,7 +402,7 @@ impl System {
             samples,
             tracks,
             transport,
-            views,
+            view_state,
         }
     }
 
@@ -417,6 +417,14 @@ impl System {
                     if self.cmd == "q" {
                         self.mode = Mode::Shutdown;
                         return;
+                    }
+
+                    if self.cmd == "bn" {
+                        self.view_state.next();
+                    }
+
+                    if self.cmd == "bp" {
+                        self.view_state.prev();
                     }
 
                     self.cmd = String::new();
@@ -757,7 +765,7 @@ fn main() -> Result<(), Error> {
                     f.render_widget(track, tracks[i]);
                 }
 
-                f.render_widget(system.views.clone(), chunks[0]);
+                f.render_widget(system.view_state.clone(), chunks[0]);
                 f.render_widget(system.transport.clone(), chunks[2]);
                 f.render_widget(command_line, chunks[3]);
             })
