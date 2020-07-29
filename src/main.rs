@@ -138,6 +138,7 @@ impl Transport {
         self.playing = !self.playing;
 
         if self.playing {
+            self.step_by(-1);
             self.next_step_frame = self.frame;
         }
     }
@@ -222,15 +223,18 @@ struct Voice {
 }
 
 impl Voice {
+    /// Open the voice and start playing sound.
     fn note_on(&mut self) {
         self.offset = 0;
         self.playing = true;
     }
 
+    /// Close the voice and stop playing sound.
     fn note_off(&mut self) {
         self.playing = false;
     }
 
+    /// Retrieve a frame for the voice from the sample bank.
     fn get_frame(&mut self, samples: &HashMap<u8, SampleClip>) -> Stereo<f32> {
         if !self.playing {
             return Frame::equilibrium();
@@ -386,6 +390,7 @@ impl System {
             samples.insert(i, clip);
         }
 
+        // Initialize the two default views.
         let views = ViewState::new(vec![View::Tracker, View::Samples]);
 
         Self {
@@ -502,6 +507,8 @@ impl System {
 
         while self.audio_frame + latency >= self.transport.frame {
             if self.transport.playing && self.transport.on_step() {
+                self.transport.step();
+
                 let mut messages = Vec::new();
 
                 self.tracks.iter().enumerate().for_each(|(ch, track)| {
@@ -517,8 +524,6 @@ impl System {
                 if !messages.is_empty() {
                     self.midi_buffer.insert(self.transport.frame, messages);
                 }
-
-                self.transport.step()
             }
 
             self.transport.frame += 1;
@@ -786,11 +791,13 @@ impl<'a> Widget for TrackUI<'a> {
         for i in 0..top.height {
             let mut style = Style::default();
 
+            // If `None`, in empty space above the step sequence.
             let step_index = match (self.current + i as usize).checked_sub(middle as usize) {
                 Some(v) => v as usize,
                 None => continue,
             };
 
+            // Empty space below the step sequence.
             if step_index >= steps {
                 continue;
             }
