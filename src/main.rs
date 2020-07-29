@@ -27,6 +27,7 @@ use tui::text::{Span, Spans};
 use tui::widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Widget};
 use tui::Terminal;
 
+/// Struct of available views in the UI.
 #[derive(Clone, Debug, PartialEq)]
 pub enum View {
     Tracker,
@@ -448,6 +449,9 @@ impl System {
                     self.cmd = String::new();
                     self.mode = Mode::Normal;
                 }
+                Key::Char(' ') => {
+                    self.transport.play_pause();
+                }
                 Key::Char('a') => {
                     self.midi_buffer.insert(
                         self.transport.frame,
@@ -457,14 +461,6 @@ impl System {
                         self.transport.frame + 100,
                         vec![(self.focus.track as u8, Message::NoteOn(0, 0))],
                     );
-                }
-                _ => {
-                    info!("Unhandled key event: {:?}", key);
-                }
-            },
-            Mode::Normal => match key {
-                Key::Char(' ') => {
-                    self.transport.play_pause();
                 }
                 Key::Char('h') => {
                     let track_count = self.tracks.len();
@@ -481,13 +477,6 @@ impl System {
                 Key::Char('l') => {
                     self.focus.track = (self.focus.track + 1) % self.tracks.len();
                 }
-                Key::Char('i') => {
-                    self.mode = Mode::Insert;
-                }
-                Key::Char(':') => {
-                    self.cmd = String::new();
-                    self.mode = Mode::Command;
-                }
                 Key::Char('\n') => {
                     self.tracks[self.focus.track].steps[self.focus.step] = Some(Step {
                         instrument: 0,
@@ -500,6 +489,48 @@ impl System {
                     self.tracks[self.focus.track].steps[self.focus.step] = None;
                     let step_count = self.tracks[self.focus.track].steps.len();
                     self.focus.step = (self.focus.step + step_count - 4) % step_count;
+                }
+                _ => {
+                    info!("Unhandled key event: {:?}", key);
+                }
+            },
+            Mode::Normal => match key {
+                Key::Char(' ') => {
+                    self.transport.play_pause();
+                }
+                Key::Char('i') => {
+                    self.mode = Mode::Insert;
+                }
+                Key::Char('j') => {
+                    // Only allow vertical movement if paused.
+                    if self.transport.playing {
+                        return;
+                    }
+
+                    self.transport.step_by(1);
+                }
+                Key::Char('k') => {
+                    // Only allow vertical movement if paused.
+                    if self.transport.playing {
+                        return;
+                    }
+
+                    self.transport.step_by(-1);
+                }
+                Key::Char(':') => {
+                    self.cmd = String::new();
+                    self.mode = Mode::Command;
+                }
+                Key::Char('\n') => {
+                    self.tracks[self.focus.track].steps[self.transport.step] = Some(Step {
+                        instrument: 0,
+                        note: 0,
+                    });
+                    self.transport.step_by(4);
+                }
+                Key::Backspace => {
+                    self.tracks[self.focus.track].steps[self.transport.step] = None;
+                    self.transport.step_by(-4);
                 }
                 _ => {
                     info!("Unhandled key event: {:?}", key);
